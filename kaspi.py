@@ -885,17 +885,22 @@ async def game_joker(message: Message):
     update_balance(user["user_id"], -bet)
     session_id = f"{message.from_user.id}_{message.message_id}"
     skull_pos = random.randint(0,2)
-    joker_sessions[session_id] = {"user_id":user["user_id"],"user_name":user["first_name"],"bet":bet,"level":0,"skull_pos":skull_pos,"history":[]}
+    joker_sessions[session_id] = {
+        "user_id": user["user_id"], "user_name": user["first_name"],
+        "bet": bet, "level": 0, "skull_pos": skull_pos, "history": []
+    }
     mention = get_mention(user["user_id"], user["first_name"])
     await message.answer(
         f"{mention}, вы начали игру Джокер!\n💰 Ставка: {format_balance(bet)}\n💵 Выигрыш: x{JOKER_MULTIS[0]} = {format_balance(bet)}",
-        reply_markup=get_joker_kb(session_id, finished=False))
+        reply_markup=get_joker_kb(session_id, finished=False)
+    )
 
 def get_joker_kb(session_id, finished=False):
     sess = joker_sessions.get(session_id)
     kb = []
     if sess and "history" in sess:
-        for row in sess["history"]: kb.append(row)
+        for row in sess["history"]:
+            kb.append(row)
     if not finished:
         row = [
             InlineKeyboardButton(text="🎴", callback_data=f"jk_{session_id}_0"),
@@ -903,58 +908,98 @@ def get_joker_kb(session_id, finished=False):
             InlineKeyboardButton(text="🎴", callback_data=f"jk_{session_id}_2")
         ]
         kb.append(row)
-        kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"jk_cash_{session_id}")])
+        # Зелёная кнопка после первого успешного хода
+        if sess and sess["level"] > 0:
+            btn_text = "🟢 💰 Забрать выигрыш"
+        else:
+            btn_text = "💰 Забрать выигрыш"
+        kb.append([InlineKeyboardButton(text=btn_text, callback_data=f"jk_cash_{session_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 @router.callback_query(F.data.startswith("jk_"))
 async def joker_callback(callback: CallbackQuery):
     parts = callback.data.split("_")
-    if parts[1] == "noop": await callback.answer("Этаж пройден."); return
+    if parts[1] == "noop":
+        await callback.answer("Этаж пройден.")
+        return
     if parts[1] == "cash":
         session_id = f"{parts[2]}_{parts[3]}"
-        if session_id not in joker_sessions: await callback.answer("Игра завершена."); return
+        if session_id not in joker_sessions:
+            await callback.answer("Игра завершена.")
+            return
         sess = joker_sessions[session_id]
-        if sess["user_id"] != callback.from_user.id: await callback.answer("Чужая игра!"); return
-        lvl = sess["level"]; win = int(sess["bet"] * JOKER_MULTIS[lvl])
+        if sess["user_id"] != callback.from_user.id:
+            await callback.answer("Чужая игра!")
+            return
+        lvl = sess["level"]
+        win = int(sess["bet"] * JOKER_MULTIS[lvl])
         update_balance(sess["user_id"], win)
         del joker_sessions[session_id]
         mention = get_mention(sess["user_id"], sess["user_name"])
         await callback.message.edit_text(f"{mention}, вы забрали выигрыш <b>{format_balance(win)}</b>!")
         return
-    session_id = f"{parts[1]}_{parts[2]}"; choice = int(parts[3])
-    if session_id not in joker_sessions: await callback.answer("Игра завершена."); return
+
+    session_id = f"{parts[1]}_{parts[2]}"
+    choice = int(parts[3])
+    if session_id not in joker_sessions:
+        await callback.answer("Игра завершена.")
+        return
     sess = joker_sessions[session_id]
-    if sess["user_id"] != callback.from_user.id: await callback.answer("Чужая игра!"); return
-    skull_pos = sess["skull_pos"]; mention = get_mention(sess["user_id"], sess["user_name"])
+    if sess["user_id"] != callback.from_user.id:
+        await callback.answer("Чужая игра!")
+        return
+
+    skull_pos = sess["skull_pos"]
+    mention = get_mention(sess["user_id"], sess["user_name"])
+
     if choice == skull_pos:
+        # Проигрыш – показываем только историю, без кнопки "Забрать"
         row_buttons = []
         for i in range(3):
-            if i == skull_pos: row_buttons.append(InlineKeyboardButton(text="💀", callback_data="jk_noop"))
-            else: row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
+            if i == skull_pos:
+                row_buttons.append(InlineKeyboardButton(text="💀", callback_data="jk_noop"))
+            else:
+                row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
         sess["history"].append(row_buttons)
         del joker_sessions[session_id]
-        await callback.message.edit_text(f"{mention}, вы проиграли! Проиграно {format_balance(sess['bet'])}.", reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"]))
-    else:
-        row_buttons = []
-        for i in range(3):
-            if i == choice: row_buttons.append(InlineKeyboardButton(text="🂡", callback_data="jk_noop"))
-            elif i == skull_pos: row_buttons.append(InlineKeyboardButton(text="💀", callback_data="jk_noop"))
-            else: row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
-        sess["history"].append(row_buttons)
-        sess["level"] += 1
-        lvl = sess["level"]
-        sess["skull_pos"] = random.randint(0,2)
-        if lvl >= len(JOKER_MULTIS)-1:
-            win = int(sess["bet"] * JOKER_MULTIS[-1])
-            update_balance(sess["user_id"], win)
-            del joker_sessions[session_id]
-            await callback.message.edit_text(f"{mention}, максимальный множитель! Выигрыш <b>{format_balance(win)}</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"]))
-        else:
-            cur_win = int(sess["bet"] * JOKER_MULTIS[lvl])
-            await callback.message.edit_text(
-                f"{mention}, вы продолжаете игру Джокер!\n💰 Ставка: {format_balance(sess['bet'])}\n💵 Выигрыш: x{JOKER_MULTIS[lvl]} = {format_balance(cur_win)}",
-                reply_markup=get_joker_kb(session_id, finished=False))
+        await callback.message.edit_text(
+            f"{mention}, вы проиграли! Проиграно {format_balance(sess['bet'])}.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"])
+        )
+        return
 
+    # Правильный выбор – открываем карту, скелет показываем
+    row_buttons = []
+    for i in range(3):
+        if i == choice:
+            row_buttons.append(InlineKeyboardButton(text="🂡", callback_data="jk_noop"))  # открытая карта
+        elif i == skull_pos:
+            row_buttons.append(InlineKeyboardButton(text="💀", callback_data="jk_noop"))
+        else:
+            row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
+    sess["history"].append(row_buttons)
+    sess["level"] += 1
+    lvl = sess["level"]
+    sess["skull_pos"] = random.randint(0,2)
+
+    if lvl >= len(JOKER_MULTIS) - 1:
+        # Максимальный уровень – авто-выигрыш
+        win = int(sess["bet"] * JOKER_MULTIS[-1])
+        update_balance(sess["user_id"], win)
+        del joker_sessions[session_id]
+        await callback.message.edit_text(
+            f"{mention}, максимальный множитель! Выигрыш <b>{format_balance(win)}</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"])
+        )
+    else:
+        # Продолжаем игру – кнопка становится зелёной
+        cur_win = int(sess["bet"] * JOKER_MULTIS[lvl])
+        await callback.message.edit_text(
+            f"{mention}, вы продолжаете игру Джокер!\n"
+            f"💰 Ставка: {format_balance(sess['bet'])}\n"
+            f"💵 Выигрыш: x{JOKER_MULTIS[lvl]} = {format_balance(cur_win)}",
+            reply_markup=get_joker_kb(session_id, finished=False)
+        )
 # ---------- Мины ----------
 mines_sessions = {}
 MINES_MULTIS = [1.25, 1.60, 2.15, 3.20, 5.30, 8.50, 10.50]
