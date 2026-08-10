@@ -972,7 +972,7 @@ async def joker_callback(callback: CallbackQuery):
     row_buttons = []
     for i in range(3):
         if i == choice:
-            row_buttons.append(InlineKeyboardButton(text="🂡", callback_data="jk_noop"))  # открытая карта
+            row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))  # открытая карта
         elif i == skull_pos:
             row_buttons.append(InlineKeyboardButton(text="💀", callback_data="jk_noop"))
         else:
