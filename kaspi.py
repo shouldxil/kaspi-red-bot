@@ -2,6 +2,7 @@ import asyncio
 import logging
 import random
 import os
+import json
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from aiohttp import web
@@ -19,22 +20,23 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     FSInputFile,
+    BufferedInputFile,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+# ---------- КОНФИГУРАЦИЯ ----------
+TOKEN = "8595100817:AAHPqn4Zq8Vs0BdsZ2KVis9RUdY9Aif4XCc"
 ADMIN_ID = 7934547554
 MIN_BET = 10
-BOT_USERNAME = os.getenv("BOT_USERNAME", "")
+BOT_USERNAME = ""
 
-if not TOKEN:
-    logging.error("BOT_TOKEN не задан. Установите переменную окружения.")
-    exit(1)
-if not DATABASE_URL:
-    logging.error("DATABASE_URL не задан. Установите переменную окружения.")
-    exit(1)
+# Параметры БД из переменных окружения (можно захардкодить, но лучше через env)
+DB_HOST = os.environ.get("DB_HOST", "dpg-d9pql639ik0c73cgls40-a.oregon-postgres.render.com")
+DB_NAME = os.environ.get("DB_NAME", "creditmania_db")
+DB_USER = os.environ.get("DB_USER", "creditmania_db_user")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "pJBZkkVIv2o4MP4Ar3FAqrrVmhGB2scY")
+DB_PORT = os.environ.get("DB_PORT", "5432")
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
@@ -48,13 +50,15 @@ def get_cached_animation():
         CACHED_ANIMATION = FSInputFile("red-1.mp4")
     return CACHED_ANIMATION
 
+# ---------- ПУЛ ПОСТГРЕС ----------
 DB_POOL = None
 
 def init_db_pool():
     global DB_POOL
     DB_POOL = pool.ThreadedConnectionPool(
         minconn=1, maxconn=20,
-        dsn=DATABASE_URL
+        host=DB_HOST, database=DB_NAME, user=DB_USER,
+        password=DB_PASSWORD, port=DB_PORT, sslmode='require'
     )
     logging.info("Connection Pool PostgreSQL создан.")
 
@@ -70,13 +74,14 @@ def init_db():
     init_db_pool()
     with get_db() as conn:
         with conn.cursor() as cursor:
+            # Создание таблиц, если их нет
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     first_name TEXT, last_name TEXT, username TEXT,
                     balance BIGINT DEFAULT 1000, last_bonus TEXT
                 )""")
-            # Добавляем колонки, если их нет
+            # Безопасное добавление колонок
             for col, col_def in [
                 ("games_played", "INT DEFAULT 0"),
                 ("games_won", "INT DEFAULT 0"),
@@ -88,7 +93,7 @@ def init_db():
                     cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def}")
                     conn.commit()
                 except psycopg2.Error:
-                    conn.rollback()
+                    conn.rollback()  # сбрасываем ошибку, чтобы транзакция не осталась в нерабочем состоянии
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS admins (
@@ -164,10 +169,9 @@ def init_db():
             conn.commit()
     logging.info("БД инициализирована.")
 
-# Инициализация БД при старте
 init_db()
 
-# ---------- Хелперы ----------
+# ---------- ХЕЛПЕРЫ ----------
 def get_user(user_id: int, first_name: str = "", last_name: str = "", username: str = "") -> dict:
     safe_name = first_name if first_name else "Игрок"
     with get_db() as conn:
@@ -362,9 +366,9 @@ def check_group_only(message: Message, game_name: str) -> bool:
     return True
 
 def format_balance(amount: int) -> str:
-    return f"{amount:,}".replace(",", " ") + " ₸"
+    return f"{amount:,}".replace(",", " ")
 
-# ---------- Клавиатуры и бонус ----------
+# ---------- КЛАВИАТУРЫ И БОНУС ----------
 def get_main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -418,9 +422,9 @@ async def process_bonus_logic(user_id: int, first_name: str, is_group_context: b
             conn.commit()
     mention = get_mention(user_id, user['first_name'])
     updated_user = get_user(user_id)
-    return f"🎁 {mention} получил бонус <b>{format_balance(b_amt)}</b> 💰!\n\n👤 {mention}\n💰 Баланс: {format_balance(updated_user['balance'])}"
+    return f"🎁 {mention} получил бонус <b>{format_balance(b_amt)} CRD</b> 💰!\n\n👤 {mention}\n💰 Баланс: {format_balance(updated_user['balance'])} CRD"
 
-# ---------- Основные команды ----------
+# ---------- ОСНОВНЫЕ КОМАНДЫ ----------
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
@@ -453,8 +457,10 @@ async def cmd_start(message: Message):
     welcome_text = (
         "👋 Добро пожаловать в CreditMania!\n\n"
         "🎰 Игры: Рулетка, Джокер, Мины, Дуэли\n"
-        "💎 Валюта: ₸ (тенге)\n"
-        "💰 Начальный баланс: 4 000 ₸\n\n"
+        "💎 Валюта: CRD\n"
+        "💰 Начальный баланс: 4 000 CRD\n\n"
+        "📢 Новости и обновления: @creditmania_news\n"
+        "💬 Общий чат: @creditmania_chat\n"
         "👨‍💻 Связь с разработчиком: @se7ze\n\n"
         "Используй кнопки ниже для навигации."
     )
@@ -532,7 +538,7 @@ async def cmd_balance(message: Message):
     text = f"👤 Профиль {mention}\n"
     if rank_str:
         text += f"{rank_str}\n"
-    text += f"💰 Баланс: <b>{format_balance(user['balance'])}</b>\n"
+    text += f"💰 Баланс: <b>{format_balance(user['balance'])}</b> CRD\n"
     text += f"🎮 Всего игр: <b>{user['games_played']}</b> | Побед: <b>{user['games_won']}</b>\n"
     if user.get('referrer_id'):
         ref_user = get_user(user['referrer_id'])
@@ -560,7 +566,7 @@ async def cmd_top(message: Message):
     text = f"🏆 <b>Топ {len(rows)} игроков:</b>\n\n"
     for i, row in enumerate(rows, 1):
         mention = get_mention(row[0], row[1])
-        text += f"{i}. {mention} — <b>{format_balance(row[2])}</b>\n"
+        text += f"{i}. {mention} — <b>{format_balance(row[2])}</b> CRD\n"
     await message.answer(text)
 
 @router.message(F.text == "🏆 Топ")
@@ -597,7 +603,7 @@ async def cmd_daily(message: Message):
             cursor.execute("INSERT INTO daily_tasks (user_id, date, task_type) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (user_id, today, task['type']))
             cursor.execute("UPDATE users SET last_daily = %s WHERE user_id = %s", (today, user_id))
             conn.commit()
-    text = f"📋 <b>Ежедневное задание:</b>\n\n{task['desc']}\n\n🎁 Награда: <b>{format_balance(task['reward'])}</b>\n\nПрогресс: 0/{task['target']}"
+    text = f"📋 <b>Ежедневное задание:</b>\n\n{task['desc']}\n\n🎁 Награда: <b>{format_balance(task['reward'])}</b> CRD\n\nПрогресс: 0/{task['target']}"
     await message.answer(text)
 
 @router.message(Command("referral"))
@@ -609,7 +615,7 @@ async def cmd_referral(message: Message):
         f"👥 <b>Реферальная система</b>\n\n"
         f"Ваша ссылка: {ref_link}\n"
         f"Приглашено: <b>{user['referred_count']}</b>\n"
-        f"Бонус за каждого: <b>10 000 ₸</b>\n\n"
+        f"Бонус за каждого: <b>10 000 CRD</b>\n\n"
         f"Отправьте эту ссылку друзьям и получайте бонусы!"
     )
     await message.answer(text)
@@ -630,7 +636,7 @@ async def cmd_promo(message: Message):
         return
     user_id = message.from_user.id
     if use_promo(user_id, code, promo['amount']):
-        await message.answer(f"✅ Промокод активирован! Начислено <b>{format_balance(promo['amount'])}</b>.")
+        await message.answer(f"✅ Промокод активирован! Начислено <b>{format_balance(promo['amount'])}</b> CRD.")
     else:
         await message.answer("❌ Вы уже активировали этот промокод.")
 
@@ -667,12 +673,12 @@ async def cmd_transfer(message: Message):
     update_balance(target['user_id'], amount)
     mention_from = get_mention(user['user_id'], user['first_name'])
     mention_to = get_mention(target['user_id'], target['first_name'])
-    msg = f"💸 {mention_from} перевел {mention_to} <b>{format_balance(amount)}</b>."
+    msg = f"💸 {mention_from} перевел {mention_to} <b>{format_balance(amount)}</b> CRD."
     if comment:
         msg += f"\n💬 Комментарий: <i>{comment}</i>"
     await message.answer(msg)
 
-# ---------- Админ-команды (обычные) ----------
+# ---------- АДМИН-КОМАНДЫ ----------
 @router.message(Command("addpromo"))
 async def admin_addpromo(message: Message):
     if not is_admin_or_above(message.from_user.id):
@@ -688,7 +694,7 @@ async def admin_addpromo(message: Message):
                            (code, amount, uses))
             conn.commit()
     log_admin_action(message.from_user.id, f"addpromo {code} {amount} {uses}")
-    await message.answer(f"✅ Промокод <b>{code}</b> создан/обновлён: <b>{format_balance(amount)}</b>, исп: <b>{uses}</b>.")
+    await message.answer(f"✅ Промокод <b>{code}</b> создан/обновлён: <b>{amount} CRD</b>, исп: <b>{uses}</b>.")
 
 @router.message(Command("delpromo"))
 async def admin_delpromo(message: Message):
@@ -721,7 +727,7 @@ async def admin_setbal(message: Message):
             cursor.execute("UPDATE users SET balance = %s WHERE user_id = %s", (new_balance, target["user_id"]))
             conn.commit()
     log_admin_action(message.from_user.id, f"setbal {target['user_id']} {new_balance}")
-    await message.answer(f"✅ Баланс {get_mention(target['user_id'], target['first_name'])} установлен на <b>{format_balance(new_balance)}</b>.")
+    await message.answer(f"✅ Баланс {get_mention(target['user_id'], target['first_name'])} установлен на <b>{new_balance} CRD</b>.")
 
 @router.message(Command("info"))
 async def admin_info(message: Message):
@@ -740,7 +746,7 @@ async def admin_info(message: Message):
             f"🆔 ID: {target['user_id']}\n"
             f"👤 Username: @{target['username'] or 'нет'}\n"
             f"📊 Ранг: {get_rank_emoji(rank)}\n"
-            f"💰 Баланс: <b>{format_balance(target['balance'])}</b>\n"
+            f"💰 Баланс: <b>{format_balance(target['balance'])}</b> CRD\n"
             f"🎮 Игр: {target['games_played']} | Побед: {target['games_won']}\n"
             f"🕒 Последний бонус: {target['last_bonus'] or 'никогда'}")
     await message.answer(text)
@@ -760,7 +766,7 @@ async def admin_quick_give(message: Message):
         return
     update_balance(target["user_id"], amount)
     log_admin_action(message.from_user.id, f"выдать {target['user_id']} {amount}")
-    await message.answer(f"✅ Пользователю {get_mention(target['user_id'], target['first_name'])} выдано <b>{format_balance(amount)}</b>.")
+    await message.answer(f"✅ Пользователю {get_mention(target['user_id'], target['first_name'])} выдано <b>{amount} CRD</b>.")
 
 @router.message(Command("take"))
 async def admin_take(message: Message):
@@ -777,7 +783,7 @@ async def admin_take(message: Message):
         return
     update_balance(target["user_id"], -amount)
     log_admin_action(message.from_user.id, f"take {target['user_id']} {amount}")
-    await message.answer(f"✅ У пользователя {get_mention(target['user_id'], target['first_name'])} списано <b>{format_balance(amount)}</b>.")
+    await message.answer(f"✅ У пользователя {get_mention(target['user_id'], target['first_name'])} списано <b>{amount} CRD</b>.")
 
 @router.message(Command("resetbal"))
 async def admin_resetbal(message: Message):
@@ -796,7 +802,7 @@ async def admin_resetbal(message: Message):
             cursor.execute("UPDATE users SET balance = 4000 WHERE user_id = %s", (target["user_id"],))
             conn.commit()
     log_admin_action(message.from_user.id, f"resetbal {target['user_id']}")
-    await message.answer(f"✅ Баланс {get_mention(target['user_id'], target['first_name'])} сброшен до 4000 ₸.")
+    await message.answer(f"✅ Баланс {get_mention(target['user_id'], target['first_name'])} сброшен до 4000 CRD.")
 
 @router.message(Command("add_admin"))
 async def admin_add(message: Message):
@@ -860,12 +866,12 @@ async def admin_setbonus(message: Message):
         return
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
-        await message.answer(f"🎁 Текущий бонус: <b>{format_balance(int(get_setting('bonus_amount','3000')))}</b>")
+        await message.answer(f"🎁 Текущий бонус: <b>{get_setting('bonus_amount','3000')} CRD</b>")
         return
     amount = int(args[1])
     set_setting("bonus_amount", str(amount))
     log_admin_action(message.from_user.id, f"setbonus {amount}")
-    await message.answer(f"✅ Бонус изменён на <b>{format_balance(amount)}</b>")
+    await message.answer(f"✅ Бонус изменён на <b>{amount} CRD</b>")
 
 @router.message(Command("setcooldown"))
 async def admin_setcooldown(message: Message):
@@ -888,7 +894,7 @@ async def admin_stats(message: Message):
         with conn.cursor() as cursor:
             cursor.execute("SELECT COUNT(*), COALESCE(SUM(balance),0) FROM users")
             users_count, total_balance = cursor.fetchone()
-    await message.answer(f"📊 <b>Статистика</b>\n👥 Пользователей: <b>{users_count}</b>\n💰 Общий баланс: <b>{format_balance(total_balance or 0)}</b>")
+    await message.answer(f"📊 <b>Статистика</b>\n👥 Пользователей: <b>{users_count}</b>\n💰 Общий баланс: <b>{format_balance(total_balance or 0)}</b> CRD")
 
 @router.message(Command("broadcast"))
 async def admin_broadcast(message: Message):
@@ -948,7 +954,289 @@ async def admin_enable(message: Message):
     await message.answer(f"✅ Игра <b>{game}</b> включена.")
 
 # ==================== ИГРЫ ====================
-# ---------- Джокер ----------
+REDS = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
+chat_roulette_bets = {}
+chat_last_bet_time = {}
+
+def parse_roulette_target(target_str: str):
+    t = target_str.lower()
+    if t in ["к","red","красное"]:
+        return "к", "RED"
+    elif t in ["ч","black","черное"]:
+        return "ч", "BLACK"
+    elif t in ["even","чет"]:
+        return "even", "EVEN"
+    elif t in ["odd","нечет"]:
+        return "odd", "ODD"
+    elif t in ["1-12","13-24","25-36"]:
+        return t, t
+    elif "-" in t:
+        try:
+            s, e = map(int, t.split("-"))
+            if 0 <= s <= 36 and 0 <= e <= 36 and s <= e:
+                # ЗАЩИТА ОТ ЧИТА: запрещаем диапазон 0-36
+                if s == 0 and e == 36:
+                    return None, None
+                return t, f"{s}-{e}"
+        except:
+            pass
+    elif t.isdigit():
+        val = int(t)
+        if 0 <= val <= 36:
+            return str(val), str(val)
+    return None, None
+
+def choice_emoji(choice):
+    if choice in ["RED","к","red","красное"]:
+        return "🔴"
+    elif choice in ["BLACK","ч","black","черное"]:
+        return "⚫"
+    elif choice in ["EVEN","even","чет"]:
+        return "🔵"
+    elif choice in ["ODD","odd","нечет"]:
+        return "🟠"
+    elif choice == "0":
+        return "🟢"
+    else:
+        return ""
+
+@router.message(F.text.lower() == "ставки")
+async def roulette_bets_list(message: Message):
+    if not check_group_only(message, "рулетка"):
+        return
+    chat_id = message.chat.id
+    bets = chat_roulette_bets.get(chat_id, [])
+    if not bets:
+        await message.answer("📋 Нет активных ставок.")
+        return
+    text = "📋 <b>Активные ставки</b>\n\n"
+    for b in bets:
+        mention = get_mention(b["user_id"], b["user_name"])
+        emoji = choice_emoji(b["choice_display"])
+        text += f"• {mention} — {b['bet']} CRD на {emoji} {b['choice_display']}\n"
+    await message.answer(text)
+
+@router.message(F.text.lower() == "лог")
+async def cmd_roulette_log(message: Message):
+    if not check_group_only(message, "рулетка"):
+        return
+    history = get_roulette_history()
+    if not history:
+        await message.answer("📜 История пуста.")
+        return
+    lines = [f"{item['roll']}{item['color']}" for item in history]
+    await message.answer("📜 <b>История рулетки</b>\n\n" + "\n".join(lines))
+
+@router.message(F.text.lower().in_(["го","старт"]))
+async def roulette_go(message: Message):
+    if not check_group_only(message, "рулетка"):
+        return
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    if chat_id not in chat_roulette_bets or not any(b["user_id"] == user_id for b in chat_roulette_bets[chat_id]):
+        return
+    last_time = chat_last_bet_time.get((chat_id, user_id))
+    if last_time:
+        diff = (datetime.now() - last_time).total_seconds()
+        if diff < 15:
+            rem = int(15 - diff)
+            await message.answer(f"Ошибка. Раунд можно закончить через {rem} сек.")
+            return
+    bets_to_play = chat_roulette_bets[chat_id]
+    chat_roulette_bets[chat_id] = []
+    valid_bets = []
+    for b in bets_to_play:
+        u = get_user(b["user_id"])
+        if u["balance"] >= b["bet"]:
+            update_balance(b["user_id"], -b["bet"])
+            valid_bets.append(b)
+    if not valid_bets:
+        return
+    try:
+        animation_file = get_cached_animation()
+        if animation_file:
+            sent_msg = await message.answer_animation(animation=animation_file)
+        else:
+            sent_msg = await message.answer("🎰 Крутим рулетку...")
+        await asyncio.sleep(5)
+        try:
+            await bot.delete_message(chat_id, sent_msg.message_id)
+        except:
+            pass
+    except:
+        await asyncio.sleep(5)
+    roll = random.randint(0, 36)
+    color = "🔴" if roll in REDS else ("🟢" if roll == 0 else "⚫")
+    add_roulette_log(roll, color)
+    res_lines = [f"Рулетка: {roll}{color}"]
+    for b in valid_bets:
+        mention = get_mention(b["user_id"], b["user_name"])
+        emoji = choice_emoji(b["choice_display"])
+        res_lines.append(f"{mention} {b['bet']} CRD на {emoji} {b['choice_display']}")
+    res_lines.append("")
+    for b in valid_bets:
+        choice = b["choice"]
+        bet = b["bet"]
+        is_win = False
+        multi = 0
+        if choice in ["к","red"]:
+            is_win = (roll in REDS)
+            multi = 2
+        elif choice in ["ч","black"]:
+            is_win = (roll not in REDS and roll != 0)
+            multi = 2
+        elif choice in ["even","чет"]:
+            is_win = (roll != 0 and roll % 2 == 0)
+            multi = 2
+        elif choice in ["odd","нечет"]:
+            is_win = (roll != 0 and roll % 2 != 0)
+            multi = 2
+        elif choice in ["1-12","13-24","25-36"]:
+            s, e = map(int, choice.split("-"))
+            is_win = (s <= roll <= e)
+            multi = 3
+        elif "-" in choice:
+            s, e = map(int, choice.split("-"))
+            is_win = (s <= roll <= e)
+            n = e - s + 1
+            multi = max(2, int(36 / n))
+        else:
+            is_win = (roll == int(choice))
+            multi = 36
+        mention = get_mention(b["user_id"], b["user_name"])
+        if is_win:
+            win_amount = bet * multi
+            update_balance(b["user_id"], win_amount)
+            with get_db() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE users SET games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = %s", (b["user_id"],))
+                    conn.commit()
+            res_lines.append(f"{mention} ставка {bet} CRD выиграл {win_amount} на {b['choice_display']}")
+        else:
+            with get_db() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE users SET games_played = games_played + 1 WHERE user_id = %s", (b["user_id"],))
+                    conn.commit()
+            res_lines.append(f"{mention} ставка {bet} CRD проиграл")
+    keyboard_rows = []
+    unique_users_in_bets = {}
+    for b in valid_bets:
+        uid = b["user_id"]
+        if uid not in unique_users_in_bets:
+            unique_users_in_bets[uid] = b["user_name"]
+    for uid, uname in unique_users_in_bets.items():
+        keyboard_rows.append([
+            InlineKeyboardButton(text=f"🔄 Повторить ({uname})", callback_data=f"rl_rep_{uid}"),
+            InlineKeyboardButton(text=f"2️⃣ Удвоить ({uname})", callback_data=f"rl_dbl_{uid}")
+        ])
+    kb = InlineKeyboardMarkup(inline_keyboard=keyboard_rows) if keyboard_rows else None
+    await message.answer("\n".join(res_lines), reply_markup=kb)
+
+@router.callback_query(F.data.startswith("rl_rep_") | F.data.startswith("rl_dbl_"))
+async def roulette_action_callback(callback: CallbackQuery):
+    data = callback.data
+    parts = data.split("_")
+    action = parts[1]
+    target_uid = int(parts[2])
+    if callback.from_user.id != target_uid:
+        await callback.answer("❌ Не ваша ставка!", show_alert=True)
+        return
+    user_id = target_uid
+    user = get_user(user_id, callback.from_user.first_name or "", callback.from_user.last_name or "", callback.from_user.username or "")
+    last_bets = get_last_bets(user_id)
+    if not last_bets:
+        await callback.answer("❌ Нет сохранённой ставки!", show_alert=True)
+        return
+    multiplier = 2 if action == "dbl" else 1
+    total_cost = sum(b["bet"] * multiplier for b in last_bets)
+    if user["balance"] < total_cost:
+        await callback.answer(f"❌ Недостаточно средств! Требуется {total_cost} CRD", show_alert=True)
+        return
+    chat_id = callback.message.chat.id
+    if chat_id not in chat_roulette_bets:
+        chat_roulette_bets[chat_id] = []
+    updated_last_bets = []
+    displays = []
+    for b in last_bets:
+        new_bet_amt = b["bet"] * multiplier
+        chat_roulette_bets[chat_id].append({"user_id": user_id, "user_name": user["first_name"], "bet": new_bet_amt, "choice": b["choice"], "choice_display": b["choice_display"]})
+        updated_last_bets.append({"bet": new_bet_amt, "choice": b["choice"], "choice_display": b["choice_display"]})
+        emoji = choice_emoji(b["choice_display"])
+        displays.append(f"{new_bet_amt} CRD на {emoji} {b['choice_display']}")
+    chat_last_bet_time[(chat_id, user_id)] = datetime.now()
+    save_last_bets(user_id, updated_last_bets)
+    await callback.answer("✅ Ставка сделана!")
+    mention = get_mention(user_id, user["first_name"])
+    await callback.message.answer(f"Ставка принята: {mention} всего {total_cost} CRD ({', '.join(displays)})")
+
+@router.message(F.text)
+async def generic_message_handler(message: Message):
+    if message.text.startswith("/"):
+        return
+    text = message.text.strip()
+    parts = text.split()
+    if not parts or not parts[0].isdigit():
+        return
+
+    bet_per_item = int(parts[0])
+    targets = parts[1:]
+    if not targets:
+        return
+
+    valid_targets = []
+    for tgt in targets:
+        code, display = parse_roulette_target(tgt)
+        if code is not None:
+            valid_targets.append((code, display))
+
+    if not valid_targets:
+        return
+
+    if not check_group_only(message, "рулетка"):
+        return
+
+    if bet_per_item < MIN_BET:
+        await message.answer(f"Минимальная ставка на один объект: {MIN_BET} CRD")
+        return
+
+    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
+    total_bet = bet_per_item * len(valid_targets)
+
+    if user["balance"] < total_bet:
+        await message.answer(f"❌ Недостаточно CRD. Требуется {total_bet} CRD для {len(valid_targets)} ставок.")
+        return
+
+    chat_id = message.chat.id
+    if chat_id not in chat_roulette_bets:
+        chat_roulette_bets[chat_id] = []
+
+    new_user_bets = []
+    displays = []
+
+    for code, display in valid_targets:
+        chat_roulette_bets[chat_id].append({
+            "user_id": user["user_id"],
+            "user_name": user["first_name"],
+            "bet": bet_per_item,
+            "choice": code,
+            "choice_display": display
+        })
+        new_user_bets.append({
+            "bet": bet_per_item,
+            "choice": code,
+            "choice_display": display
+        })
+        emoji = choice_emoji(display)
+        displays.append(f"{bet_per_item} CRD на {emoji} {display}")
+
+    chat_last_bet_time[(chat_id, user["user_id"])] = datetime.now()
+    save_last_bets(user["user_id"], new_user_bets)
+
+    mention = get_mention(user["user_id"], user["first_name"])
+    displays_str = ", ".join(displays)
+    await message.answer(f"Ставка принята: {mention} всего {total_bet} CRD ({displays_str})")
+
+# ---------- ДЖОКЕР ----------
 joker_sessions = {}
 JOKER_MULTIS = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0]
 
@@ -962,24 +1250,20 @@ async def game_joker(message: Message):
         return
     bet = int(args[1])
     if bet < MIN_BET:
-        await message.answer(f"Минимальная ставка {MIN_BET} ₸")
+        await message.answer(f"Минимальная ставка {MIN_BET} CRD")
         return
     user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
     if user["balance"] < bet:
-        await message.answer("Недостаточно средств")
+        await message.answer("Недостаточно CRD")
         return
     update_balance(user["user_id"], -bet)
     session_id = f"{message.from_user.id}_{message.message_id}"
     skull_pos = random.randint(0, 2)
-    joker_sessions[session_id] = {
-        "user_id": user["user_id"], "user_name": user["first_name"],
-        "bet": bet, "level": 0, "skull_pos": skull_pos, "history": []
-    }
+    joker_sessions[session_id] = {"user_id": user["user_id"], "user_name": user["first_name"], "bet": bet, "level": 0, "skull_pos": skull_pos, "history": []}
     mention = get_mention(user["user_id"], user["first_name"])
     await message.answer(
-        f"{mention}, вы начали игру Джокер!\n💰 Ставка: {format_balance(bet)}\n💵 Выигрыш: x{JOKER_MULTIS[0]} = {format_balance(bet)}",
-        reply_markup=get_joker_kb(session_id, finished=False)
-    )
+        f"{mention}, вы начали игру Джокер!\n💰 Ставка: {bet} CRD\n💵 Выигрыш: x{JOKER_MULTIS[0]} = {bet} CRD",
+        reply_markup=get_joker_kb(session_id, finished=False))
 
 def get_joker_kb(session_id, finished=False):
     sess = joker_sessions.get(session_id)
@@ -994,11 +1278,7 @@ def get_joker_kb(session_id, finished=False):
             InlineKeyboardButton(text="🎴", callback_data=f"jk_{session_id}_2")
         ]
         kb.append(row)
-        if sess and sess["level"] > 0:
-            btn_text = "🟢 💰 Забрать выигрыш"
-        else:
-            btn_text = "💰 Забрать выигрыш"
-        kb.append([InlineKeyboardButton(text=btn_text, callback_data=f"jk_cash_{session_id}")])
+        kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"jk_cash_{session_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 @router.callback_query(F.data.startswith("jk_"))
@@ -1021,9 +1301,8 @@ async def joker_callback(callback: CallbackQuery):
         update_balance(sess["user_id"], win)
         del joker_sessions[session_id]
         mention = get_mention(sess["user_id"], sess["user_name"])
-        await callback.message.edit_text(f"{mention}, вы забрали выигрыш <b>{format_balance(win)}</b>!")
+        await callback.message.edit_text(f"{mention}, вы забрали выигрыш <b>{win} CRD</b>!")
         return
-
     session_id = f"{parts[1]}_{parts[2]}"
     choice = int(parts[3])
     if session_id not in joker_sessions:
@@ -1033,10 +1312,8 @@ async def joker_callback(callback: CallbackQuery):
     if sess["user_id"] != callback.from_user.id:
         await callback.answer("Чужая игра!")
         return
-
     skull_pos = sess["skull_pos"]
     mention = get_mention(sess["user_id"], sess["user_name"])
-
     if choice == skull_pos:
         row_buttons = []
         for i in range(3):
@@ -1046,43 +1323,32 @@ async def joker_callback(callback: CallbackQuery):
                 row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
         sess["history"].append(row_buttons)
         del joker_sessions[session_id]
-        await callback.message.edit_text(
-            f"{mention}, вы проиграли! Проиграно {format_balance(sess['bet'])}.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"])
-        )
-        return
-
-    row_buttons = []
-    for i in range(3):
-        if i == choice:
-            row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
-        elif i == skull_pos:
-            row_buttons.append(InlineKeyboardButton(text="💀", callback_data="jk_noop"))
-        else:
-            row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
-    sess["history"].append(row_buttons)
-    sess["level"] += 1
-    lvl = sess["level"]
-    sess["skull_pos"] = random.randint(0, 2)
-
-    if lvl >= len(JOKER_MULTIS) - 1:
-        win = int(sess["bet"] * JOKER_MULTIS[-1])
-        update_balance(sess["user_id"], win)
-        del joker_sessions[session_id]
-        await callback.message.edit_text(
-            f"{mention}, максимальный множитель! Выигрыш <b>{format_balance(win)}</b>",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"])
-        )
+        await callback.message.edit_text(f"{mention}, вы проиграли! Проиграно {sess['bet']} CRD.", reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"]))
     else:
-        cur_win = int(sess["bet"] * JOKER_MULTIS[lvl])
-        await callback.message.edit_text(
-            f"{mention}, вы продолжаете игру Джокер!\n"
-            f"💰 Ставка: {format_balance(sess['bet'])}\n"
-            f"💵 Выигрыш: x{JOKER_MULTIS[lvl]} = {format_balance(cur_win)}",
-            reply_markup=get_joker_kb(session_id, finished=False)
-        )
+        row_buttons = []
+        for i in range(3):
+            if i == choice:
+                row_buttons.append(InlineKeyboardButton(text="🂡", callback_data="jk_noop"))
+            elif i == skull_pos:
+                row_buttons.append(InlineKeyboardButton(text="💀", callback_data="jk_noop"))
+            else:
+                row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
+        sess["history"].append(row_buttons)
+        sess["level"] += 1
+        lvl = sess["level"]
+        sess["skull_pos"] = random.randint(0, 2)
+        if lvl >= len(JOKER_MULTIS) - 1:
+            win = int(sess["bet"] * JOKER_MULTIS[-1])
+            update_balance(sess["user_id"], win)
+            del joker_sessions[session_id]
+            await callback.message.edit_text(f"{mention}, максимальный множитель! Выигрыш <b>{win} CRD</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"]))
+        else:
+            cur_win = int(sess["bet"] * JOKER_MULTIS[lvl])
+            await callback.message.edit_text(
+                f"{mention}, вы продолжаете игру Джокер!\n💰 Ставка: {sess['bet']} CRD\n💵 Выигрыш: x{JOKER_MULTIS[lvl]} = {cur_win} CRD",
+                reply_markup=get_joker_kb(session_id, finished=False))
 
-# ---------- Мины ----------
+# ---------- МИНЫ ----------
 mines_sessions = {}
 MINES_MULTIS = [1.25, 1.60, 2.15, 3.20, 5.30, 8.50, 10.50]
 
@@ -1096,11 +1362,11 @@ async def game_mines(message: Message):
         return
     bet = int(args[1])
     if bet < MIN_BET:
-        await message.answer(f"Минимальная ставка {MIN_BET} ₸")
+        await message.answer(f"Минимальная ставка {MIN_BET} CRD")
         return
     user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
     if user["balance"] < bet:
-        await message.answer("Недостаточно средств")
+        await message.answer("Недостаточно CRD")
         return
     update_balance(user["user_id"], -bet)
     session_id = f"{message.from_user.id}_{message.message_id}"
@@ -1111,7 +1377,7 @@ async def game_mines(message: Message):
         reply_markup=get_mines_kb(session_id, [], False))
 
 def get_mines_text(mention, bet, multi, current_win):
-    return f"{mention}, вы начали игру Минное поле!\n💰 Ставка: {format_balance(bet)}\n💵 Выигрыш: x{multi} = {format_balance(current_win)}"
+    return f"{mention}, вы начали игру Минное поле!\n💰 Ставка: {bet} CRD\n💵 Выигрыш: x{multi} = {current_win} CRD"
 
 def get_mines_kb(session_id, opened, game_over, mines=None):
     buttons = []
@@ -1154,7 +1420,7 @@ async def mines_callback(callback: CallbackQuery):
         update_balance(sess["user_id"], win)
         del mines_sessions[session_id]
         mention = get_mention(sess["user_id"], sess["user_name"])
-        await callback.message.edit_text(f"{mention}, вы забрали выигрыш <b>{format_balance(win)}</b>!")
+        await callback.message.edit_text(f"{mention}, вы забрали выигрыш <b>{win} CRD</b>!")
         return
     session_id = f"{parts[1]}_{parts[2]}"
     cell = int(parts[3])
@@ -1172,7 +1438,7 @@ async def mines_callback(callback: CallbackQuery):
     if cell in sess["mines"]:
         sess["game_over"] = True
         del mines_sessions[session_id]
-        await callback.message.edit_text(f"{mention}, вы подорвались! Проиграно {format_balance(sess['bet'])}.",
+        await callback.message.edit_text(f"{mention}, вы подорвались! Проиграно {sess['bet']} CRD.",
                                          reply_markup=get_mines_kb(session_id, sess["opened"], True, sess["mines"]))
     else:
         sess["opened"].append(cell)
@@ -1183,14 +1449,14 @@ async def mines_callback(callback: CallbackQuery):
             win = int(sess["bet"] * MINES_MULTIS[-1])
             update_balance(sess["user_id"], win)
             del mines_sessions[session_id]
-            await callback.message.edit_text(f"{mention}, максимальный множитель! Выигрыш <b>{format_balance(win)}</b>",
+            await callback.message.edit_text(f"{mention}, максимальный множитель! Выигрыш <b>{win} CRD</b>",
                                              reply_markup=get_mines_kb(session_id, sess["opened"], True, sess["mines"]))
         else:
             await callback.message.edit_text(
                 get_mines_text(mention, sess["bet"], multi, current_win),
                 reply_markup=get_mines_kb(session_id, sess["opened"], False))
 
-# ---------- Coinflip ----------
+# ---------- COINFLIP ----------
 coinflip_sessions = {}
 
 @router.message(F.text.lower().startswith("coinflip"))
@@ -1203,11 +1469,11 @@ async def game_coinflip(message: Message):
         return
     bet = int(args[1])
     if bet < MIN_BET:
-        await message.answer(f"Минимальная ставка {MIN_BET} ₸")
+        await message.answer(f"Минимальная ставка {MIN_BET} CRD")
         return
     user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
     if user["balance"] < bet:
-        await message.answer("Недостаточно средств")
+        await message.answer("Недостаточно CRD")
         return
     update_balance(user["user_id"], -bet)
     session_id = f"{message.from_user.id}_{message.message_id}"
@@ -1217,7 +1483,7 @@ async def game_coinflip(message: Message):
          InlineKeyboardButton(text="🪙 Решка", callback_data=f"cf_{session_id}_tails")]
     ])
     mention = get_mention(user["user_id"], user["first_name"])
-    await message.answer(f"🪙 {mention} подбрасывает монетку!\n💰 Ставка: <b>{format_balance(bet)}</b>\nВыберите сторону:", reply_markup=kb)
+    await message.answer(f"🪙 {mention} подбрасывает монетку!\n💰 Ставка: <b>{format_balance(bet)}</b> CRD\nВыберите сторону:", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("cf_"))
 async def coinflip_callback(callback: CallbackQuery):
@@ -1241,16 +1507,16 @@ async def coinflip_callback(callback: CallbackQuery):
             with conn.cursor() as cursor:
                 cursor.execute("UPDATE users SET games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = %s", (sess["user_id"],))
                 conn.commit()
-        await callback.message.edit_text(f"🪙 Выпало: {emoji}\n🎉 Вы выиграли <b>{format_balance(win)}</b>!")
+        await callback.message.edit_text(f"🪙 Выпало: {emoji}\n🎉 Вы выиграли <b>{format_balance(win)}</b> CRD!")
     else:
         with get_db() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("UPDATE users SET games_played = games_played + 1 WHERE user_id = %s", (sess["user_id"],))
                 conn.commit()
-        await callback.message.edit_text(f"🪙 Выпало: {emoji}\n❌ Вы проиграли <b>{format_balance(sess['bet'])}</b>.")
+        await callback.message.edit_text(f"🪙 Выпало: {emoji}\n❌ Вы проиграли <b>{format_balance(sess['bet'])}</b> CRD.")
     await callback.answer()
 
-# ---------- Дуэли ----------
+# ---------- ДУЭЛИ ----------
 duels = {}
 
 @router.message(F.text.lower().startswith("дуэль"))
@@ -1269,12 +1535,12 @@ async def game_duel(message: Message):
         return
     bet = int(args[1])
     if bet < MIN_BET:
-        await message.answer(f"Минимальная ставка {MIN_BET} ₸")
+        await message.answer(f"Минимальная ставка {MIN_BET} CRD")
         return
     p1_data = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
     p2_data = get_user(target.id, target.first_name or "", target.last_name or "", target.username or "")
     if p1_data["balance"] < bet or p2_data["balance"] < bet:
-        await message.answer("❌ У одного из участников недостаточно средств.")
+        await message.answer("❌ У одного из участников недостаточно CRD.")
         return
     duel_id = f"{message.chat.id}_{message.message_id}"
     duels[duel_id] = {
@@ -1288,7 +1554,7 @@ async def game_duel(message: Message):
     ])
     p1_mention = get_mention(p1_data["user_id"], p1_data["first_name"])
     p2_mention = get_mention(p2_data["user_id"], p2_data["first_name"])
-    msg = await message.answer(f"⚔️ {p1_mention} вызывает {p2_mention} на дуэль! Ставка: {format_balance(bet)}", reply_markup=kb)
+    msg = await message.answer(f"⚔️ {p1_mention} вызывает {p2_mention} на дуэль! Ставка: {bet} CRD", reply_markup=kb)
     asyncio.create_task(duel_accept_timeout(duel_id, msg))
 
 async def duel_accept_timeout(duel_id, msg: Message):
@@ -1344,8 +1610,8 @@ async def duel_init_callback(callback: CallbackQuery):
             InlineKeyboardButton(text="✂️", callback_data=f"rps_{duel_id}_scissors")
         ]])
         try:
-            await bot.send_message(duel["p1_id"], f"⚔️ Дуэль против {p2_mention}! Ставка: {format_balance(duel['bet'])}.", reply_markup=kb1)
-            await bot.send_message(duel["p2_id"], f"⚔️ Дуэль против {p1_mention}! Ставка: {format_balance(duel['bet'])}.", reply_markup=kb2)
+            await bot.send_message(duel["p1_id"], f"⚔️ Дуэль против {p2_mention}! Ставка: {duel['bet']} CRD.", reply_markup=kb1)
+            await bot.send_message(duel["p2_id"], f"⚔️ Дуэль против {p1_mention}! Ставка: {duel['bet']} CRD.", reply_markup=kb2)
             await callback.message.edit_text("⏳ Игроки делают выбор...")
             asyncio.create_task(duel_choice_timeout(duel_id, callback.message))
         except:
@@ -1399,299 +1665,14 @@ async def rps_callback(callback: CallbackQuery):
                 win_id = duel["p2_id"]
                 winner_mention = get_mention(duel["p2_id"], duel["p2_name"])
             update_balance(win_id, bank)
-            res_text = f"🏆 Победитель: {winner_mention} забирает {format_balance(bank)}!"
+            res_text = f"🏆 Победитель: {winner_mention} забирает {bank} CRD!"
         try:
             await bot.send_message(duel["chat_id"], f"⚔️ <b>Результат дуэли</b>\n{res_text}")
         except:
             pass
         del duels[duel_id]
 
-REDS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
-chat_roulette_bets = {}
-chat_last_bet_time = {}
-
-def parse_roulette_target(target_str: str):
-    t = target_str.lower()
-    if t in ["к", "red", "красное"]:
-        return "к", "RED"
-    elif t in ["ч", "black", "черное"]:
-        return "ч", "BLACK"
-    elif t in ["even", "чет"]:
-        return "even", "EVEN"
-    elif t in ["odd", "нечет"]:
-        return "odd", "ODD"
-    elif t in ["1-12", "13-24", "25-36"]:
-        return t, t
-    elif "-" in t:
-        try:
-            s, e = map(int, t.split("-"))
-            if 0 <= s <= 36 and 0 <= e <= 36 and s <= e:
-                if (e - s + 1) > 18 or (s == 0 and e == 36):
-                    return None, None
-                return t, f"{s}-{e}"
-        except:
-            pass
-    elif t.isdigit():
-        val = int(t)
-        if 0 <= val <= 36:
-            return str(val), str(val)
-    return None, None
-
-def choice_emoji(choice):
-    if choice in ["RED", "к", "red", "красное"]:
-        return "🔴"
-    elif choice in ["BLACK", "ч", "black", "черное"]:
-        return "⚫"
-    elif choice in ["EVEN", "even", "чет"]:
-        return "🔵"
-    elif choice in ["ODD", "odd", "нечет"]:
-        return "🟠"
-    elif choice == "0":
-        return "🟢"
-    else:
-        return ""
-
-@router.message(F.text.lower() == "ставки")
-async def roulette_bets_list(message: Message):
-    if not check_group_only(message, "рулетка"):
-        return
-    chat_id = message.chat.id
-    bets = chat_roulette_bets.get(chat_id, [])
-    if not bets:
-        await message.answer("📋 Нет активных ставок.")
-        return
-    text = "📋 <b>Активные ставки</b>\n\n"
-    for b in bets:
-        mention = get_mention(b["user_id"], b["user_name"])
-        emoji = choice_emoji(b["choice_display"])
-        text += f"{mention} — <b>{format_balance(b['bet'])}</b> на {emoji} {b['choice_display']}\n"
-    await message.answer(text)
-
-@router.message(F.text.lower() == "лог")
-async def roulette_history_cmd(message: Message):
-    if not check_group_only(message, "рулетка"):
-        return
-    history = get_roulette_history()
-    if not history:
-        await message.answer("📜 История рулетки пуста.")
-        return
-    text = "📜 <b>Последние выпадения рулетки:</b>\n"
-    for h in history:
-        text += f"• Выпало: <b>{h['roll']}</b> {h['color']}\n"
-    await message.answer(text)
-
-@router.message(F.text.lower().in_(["го", "старт"]))
-async def roulette_go(message: Message):
-    if not check_group_only(message, "рулетка"):
-        return
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    if chat_id not in chat_roulette_bets or not any(b["user_id"] == user_id for b in chat_roulette_bets[chat_id]):
-        return
-    last_time = chat_last_bet_time.get((chat_id, user_id))
-    if last_time:
-        diff = (datetime.now() - last_time).total_seconds()
-        if diff < 15:
-            rem = int(15 - diff)
-            await message.answer(f"Ошибка. Раунд можно закончить через {rem} сек.")
-            return
-    bets_to_play = chat_roulette_bets[chat_id]
-    chat_roulette_bets[chat_id] = []
-    valid_bets = []
-    for b in bets_to_play:
-        u = get_user(b["user_id"])
-        if u["balance"] >= b["bet"]:
-            update_balance(b["user_id"], -b["bet"])
-            valid_bets.append(b)
-    if not valid_bets:
-        return
-    try:
-        animation_file = get_cached_animation()
-        if animation_file:
-            sent_msg = await message.answer_animation(animation=animation_file)
-        else:
-            sent_msg = await message.answer("🎰 Крутим рулетку...")
-        await asyncio.sleep(5)
-        try:
-            await bot.delete_message(chat_id, sent_msg.message_id)
-        except:
-            pass
-    except:
-        await asyncio.sleep(5)
-    roll = random.randint(0, 36)
-    color = "🔴" if roll in REDS else ("🟢" if roll == 0 else "⚫")
-    add_roulette_log(roll, color)
-    res_lines = [f"Рулетка: {roll}{color}"]
-    for b in valid_bets:
-        mention = get_mention(b["user_id"], b["user_name"])
-        emoji = choice_emoji(b["choice_display"])
-        res_lines.append(f"{mention} {b['bet']} ₸ на {emoji} {b['choice_display']}")
-    res_lines.append("")
-    for b in valid_bets:
-        choice = b["choice"]
-        bet = b["bet"]
-        is_win = False
-        multi = 0
-        if choice in ["к", "red"]:
-            is_win = (roll in REDS)
-            multi = 2
-        elif choice in ["ч", "black"]:
-            is_win = (roll not in REDS and roll != 0)
-            multi = 2
-        elif choice in ["even", "чет"]:
-            is_win = (roll != 0 and roll % 2 == 0)
-            multi = 2
-        elif choice in ["odd", "нечет"]:
-            is_win = (roll != 0 and roll % 2 != 0)
-            multi = 2
-        elif choice in ["1-12", "13-24", "25-36"]:
-            s, e = map(int, choice.split("-"))
-            is_win = (s <= roll <= e)
-            multi = 3
-        elif "-" in choice:
-            s, e = map(int, choice.split("-"))
-            is_win = (s <= roll <= e)
-            n = e - s + 1
-            multi = max(2, int(36 / n))
-        else:
-            is_win = (roll == int(choice))
-            multi = 36
-        mention = get_mention(b["user_id"], b["user_name"])
-        if is_win:
-            win_amount = bet * multi
-            update_balance(b["user_id"], win_amount)
-            with get_db() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("UPDATE users SET games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = %s", (b["user_id"],))
-                    conn.commit()
-            res_lines.append(f"{mention} ставка {bet} ₸ выиграл {format_balance(win_amount)} на {b['choice_display']}")
-        else:
-            with get_db() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("UPDATE users SET games_played = games_played + 1 WHERE user_id = %s", (b["user_id"],))
-                    conn.commit()
-            res_lines.append(f"{mention} ставка {bet} ₸ проиграл")
-
-    keyboard_rows = []
-    unique_users_in_bets = {}
-    for b in valid_bets:
-        uid = b["user_id"]
-        if uid not in unique_users_in_bets:
-            unique_users_in_bets[uid] = b["user_name"]
-    for uid, uname in unique_users_in_bets.items():
-        keyboard_rows.append([
-            InlineKeyboardButton(text=f"🔄 Повторить ({uname})", callback_data=f"rl_rep_{uid}"),
-            InlineKeyboardButton(text=f"2️⃣ Удвоить ({uname})", callback_data=f"rl_dbl_{uid}")
-        ])
-    kb = InlineKeyboardMarkup(inline_keyboard=keyboard_rows) if keyboard_rows else None
-    await message.answer("\n".join(res_lines), reply_markup=kb)
-
-@router.callback_query(F.data.startswith("rl_rep_") | F.data.startswith("rl_dbl_"))
-async def roulette_action_callback(callback: CallbackQuery):
-    data = callback.data
-    parts = data.split("_")
-    action = parts[1]
-    target_uid = int(parts[2])
-    if callback.from_user.id != target_uid:
-        await callback.answer("❌ Не ваша ставка!", show_alert=True)
-        return
-    user_id = target_uid
-    user = get_user(user_id, callback.from_user.first_name or "", callback.from_user.last_name or "", callback.from_user.username or "")
-    last_bets = get_last_bets(user_id)
-    if not last_bets:
-        await callback.answer("❌ Нет сохранённой ставки!", show_alert=True)
-        return
-    multiplier = 2 if action == "dbl" else 1
-    total_cost = sum(b["bet"] * multiplier for b in last_bets)
-    if user["balance"] < total_cost:
-        await callback.answer(f"❌ Недостаточно средств! Требуется {format_balance(total_cost)}", show_alert=True)
-        return
-    chat_id = callback.message.chat.id
-    if chat_id not in chat_roulette_bets:
-        chat_roulette_bets[chat_id] = []
-    updated_last_bets = []
-    displays = []
-    for b in last_bets:
-        new_bet_amt = b["bet"] * multiplier
-        chat_roulette_bets[chat_id].append({"user_id": user_id, "user_name": user["first_name"], "bet": new_bet_amt, "choice": b["choice"], "choice_display": b["choice_display"]})
-        updated_last_bets.append({"bet": new_bet_amt, "choice": b["choice"], "choice_display": b["choice_display"]})
-        emoji = choice_emoji(b["choice_display"])
-        displays.append(f"{new_bet_amt} ₸ на {emoji} {b['choice_display']}")
-    chat_last_bet_time[(chat_id, user_id)] = datetime.now()
-    save_last_bets(user_id, updated_last_bets)
-    await callback.answer("✅ Ставка сделана!")
-    mention = get_mention(user_id, user["first_name"])
-    await callback.message.answer(f"Ставка принята: {mention} всего {format_balance(total_cost)} ({', '.join(displays)})")
-
-@router.message(F.text)
-async def generic_message_handler(message: Message):
-    if message.text.startswith("/"):
-        return
-    text = message.text.strip()
-    parts = text.split()
-    if not parts or not parts[0].isdigit():
-        return
-
-    bet_per_item = int(parts[0])
-    targets = parts[1:]
-    if not targets:
-        return
-
-    valid_targets = []
-    for tgt in targets:
-        code, display = parse_roulette_target(tgt)
-        if code is not None:
-            valid_targets.append((code, display))
-
-    if not valid_targets:
-        return
-
-    if not check_group_only(message, "рулетка"):
-        return
-
-    if bet_per_item < MIN_BET:
-        await message.answer(f"Минимальная ставка на один объект: {MIN_BET} ₸")
-        return
-
-    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
-    total_bet = bet_per_item * len(valid_targets)
-
-    if user["balance"] < total_bet:
-        await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
-        return
-
-    chat_id = message.chat.id
-    if chat_id not in chat_roulette_bets:
-        chat_roulette_bets[chat_id] = []
-
-    new_user_bets = []
-    displays = []
-
-    for code, display in valid_targets:
-        chat_roulette_bets[chat_id].append({
-            "user_id": user["user_id"],
-            "user_name": user["first_name"],
-            "bet": bet_per_item,
-            "choice": code,
-            "choice_display": display
-        })
-        new_user_bets.append({
-            "bet": bet_per_item,
-            "choice": code,
-            "choice_display": display
-        })
-        emoji = choice_emoji(display)
-        displays.append(f"{bet_per_item} ₸ на {emoji} {display}")
-
-    chat_last_bet_time[(chat_id, user["user_id"])] = datetime.now()
-    save_last_bets(user["user_id"], new_user_bets)
-
-    mention = get_mention(user["user_id"], user["first_name"])
-    displays_str = ", ".join(displays)
-    total_store = total_bet  # исправлено: без := в f-строке
-    await message.answer(f"Ставка принята: {mention} всего {format_balance(total_store)} ({displays_str})")
-
-# ==================== СЕКРЕТНЫЕ КОМАНДЫ ВЛАДЕЛЬЦА ====================
+# ==================== СЕКРЕТНЫЕ КОМАНДЫ ====================
 @router.message(Command("zero"))
 async def secret_zero(message: Message):
     if not has_secret_power(message.from_user.id, "zero"):
@@ -1725,7 +1706,7 @@ async def secret_double(message: Message):
             cursor.execute("UPDATE users SET balance=%s WHERE user_id=%s", (new_bal, target["user_id"]))
             conn.commit()
     log_admin_action(message.from_user.id, f"double {target['user_id']} -> {new_bal}")
-    await message.answer(f"✅ Баланс удвоен: {format_balance(new_bal)}")
+    await message.answer(f"✅ Баланс удвоен: {new_bal} CRD")
 
 @router.message(Command("randomize"))
 async def secret_randomize(message: Message):
@@ -1745,7 +1726,7 @@ async def secret_randomize(message: Message):
                 cursor.execute("UPDATE users SET balance=%s WHERE user_id=%s", (bal, target["user_id"]))
                 conn.commit()
         log_admin_action(message.from_user.id, f"randomize {target['user_id']} {lo}-{hi} -> {bal}")
-        await message.answer(f"✅ Случайный баланс: {format_balance(bal)}")
+        await message.answer(f"✅ Случайный баланс: {bal} CRD")
     except:
         pass
 
@@ -1767,7 +1748,7 @@ async def secret_transfer(message: Message):
         update_balance(sender["user_id"], -amt)
         update_balance(receiver["user_id"], amt)
         log_admin_action(message.from_user.id, f"transfer {sender['user_id']} -> {receiver['user_id']} {amt}")
-        await message.answer(f"✅ Переведено {format_balance(amt)}")
+        await message.answer(f"✅ Переведено {amt} CRD")
     except:
         pass
 
@@ -1832,19 +1813,292 @@ async def secret_lottery(message: Message):
     if row:
         update_balance(row[0], prize)
         u = get_user(row[0])
-        await message.answer(f"🎉 Лотерея! {get_mention(row[0], u['first_name'])} выиграл {format_balance(prize)}!")
+        await message.answer(f"🎉 Лотерея! {get_mention(row[0], u['first_name'])} выиграл {prize} CRD!")
 
-# ---------- ЗАПУСК БОТА ----------
+@router.message(Command("reset"))
+async def secret_reset(message: Message):
+    if not has_secret_power(message.from_user.id, "reset"):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE users SET balance=4000, last_bonus=NULL, games_played=0, games_won=0 WHERE user_id=%s", (target["user_id"],))
+            cursor.execute("DELETE FROM user_last_bets WHERE user_id=%s", (target["user_id"],))
+            conn.commit()
+    log_admin_action(message.from_user.id, f"reset {target['user_id']}")
+    await message.answer(f"✅ {get_mention(target['user_id'], target['first_name'])} полностью сброшен.")
+
+@router.message(Command("ban"))
+async def secret_ban(message: Message):
+    if not has_secret_power(message.from_user.id, "ban"):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    set_setting(f"banned_{target['user_id']}", "1")
+    log_admin_action(message.from_user.id, f"ban {target['user_id']}")
+    await message.answer(f"🚫 {get_mention(target['user_id'], target['first_name'])} заблокирован.")
+
+@router.message(Command("unban"))
+async def secret_unban(message: Message):
+    if not has_secret_power(message.from_user.id, "unban"):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM settings WHERE key=%s", (f"banned_{target['user_id']}",))
+            conn.commit()
+    log_admin_action(message.from_user.id, f"unban {target['user_id']}")
+    await message.answer(f"✅ {get_mention(target['user_id'], target['first_name'])} разблокирован.")
+
+@router.message(Command("setname"))
+async def secret_setname(message: Message):
+    if not has_secret_power(message.from_user.id, "setname"):
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    new_name = " ".join(args[2:])
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE users SET first_name=%s WHERE user_id=%s", (new_name, target["user_id"]))
+            conn.commit()
+    await message.answer(f"✅ Имя изменено на {new_name}")
+
+@router.message(Command("history"))
+async def secret_history(message: Message):
+    if not has_secret_power(message.from_user.id, "history"):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT roll, color FROM roulette_log ORDER BY id DESC LIMIT 20")
+            rows = cursor.fetchall()
+    if not rows:
+        await message.answer("История пуста.")
+        return
+    text = "📜 Последние игры рулетки:\n"
+    for r in rows:
+        text += f"{r[0]}{r[1]} "
+    await message.answer(text)
+
+@router.message(Command("globalbonus"))
+async def secret_globalbonus(message: Message):
+    if not has_secret_power(message.from_user.id, "globalbonus"):
+        return
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        return
+    amt = int(args[1])
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE users SET balance = balance + %s WHERE last_bonus > %s", (amt, (datetime.now() - timedelta(hours=24)).isoformat()))
+            conn.commit()
+    await message.answer(f"✅ Глобальный бонус <b>{format_balance(amt)}</b> CRD выдан активным игрокам.")
+
+@router.message(Command("wipe"))
+async def secret_wipe(message: Message):
+    if not has_secret_power(message.from_user.id, "wipe"):
+        return
+    chat_roulette_bets.clear()
+    chat_last_bet_time.clear()
+    await message.answer("✅ Все ставки очищены.")
+
+@router.message(Command("checkpoint"))
+async def secret_checkpoint(message: Message):
+    if not has_secret_power(message.from_user.id, "checkpoint"):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    save_balance_checkpoint(target["user_id"])
+    await message.answer(f"✅ Чекпоинт сохранён для {get_mention(target['user_id'], target['first_name'])}")
+
+@router.message(Command("restore_checkpoint"))
+async def secret_restore_checkpoint(message: Message):
+    if not has_secret_power(message.from_user.id, "restore_checkpoint"):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    if restore_last_checkpoint(target["user_id"]):
+        await message.answer("✅ Баланс восстановлен из чекпоинта.")
+    else:
+        await message.answer("❌ Чекпоинт не найден.")
+
+@router.message(Command("adminlog"))
+async def view_admin_log(message: Message):
+    if not has_secret_power(message.from_user.id, "adminlog"):
+        return
+    args = message.text.split()
+    limit = 10
+    if len(args) > 1 and args[1].isdigit():
+        limit = min(int(args[1]), 50)
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT admin_id, action, target_id, amount, timestamp FROM admin_log ORDER BY id DESC LIMIT %s", (limit,))
+            rows = cursor.fetchall()
+    if not rows:
+        await message.answer("Лог пуст.")
+        return
+    text = "<b>📜 Последние действия админов</b>\n\n"
+    for r in rows:
+        text += f"🕒 {r[4][:19]} | <code>{r[0]}</code> {r[1]} | target={r[2]} amt={r[3]}\n"
+    await message.answer(text)
+
+@router.message(Command("sql_execute"))
+async def secret_sql(message: Message):
+    if not has_secret_power(message.from_user.id, "sql_execute") or message.from_user.id != ADMIN_ID:
+        return
+    query = message.text.replace("/sql_execute", "").strip()
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+                if cursor.description:
+                    rows = cursor.fetchall()[:10]
+                    text = "\n".join(str(r) for r in rows)
+                else:
+                    conn.commit()
+                    text = "Запрос выполнен."
+        await message.answer(f"<code>{text}</code>")
+    except Exception as e:
+        await message.answer(f"❌ {e}")
+
+@router.message(Command("emergency_stop"))
+async def secret_stop(message: Message):
+    if not has_secret_power(message.from_user.id, "emergency_stop"):
+        return
+    await message.answer("🛑 Бот остановлен.")
+    await bot.session.close()
+    exit(0)
+
+@router.message(Command("backup"))
+async def secret_backup(message: Message):
+    if not has_secret_power(message.from_user.id, "backup") or message.from_user.id != ADMIN_ID:
+        return
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM users")
+            users = [dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()]
+            backup_json = json.dumps(users, default=str)
+    await message.answer_document(BufferedInputFile(backup_json.encode(), "backup.json"))
+
+@router.message(Command("givepower"))
+async def give_power(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    cmd = args[2].lower()
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("INSERT INTO secret_powers (user_id, command_name) VALUES (%s,%s) ON CONFLICT DO NOTHING", (target["user_id"], cmd))
+            conn.commit()
+    await message.answer(f"✅ {get_mention(target['user_id'], target['first_name'])} получил /{cmd}")
+
+@router.message(Command("takepower"))
+async def take_power(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    cmd = args[2].lower()
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM secret_powers WHERE user_id=%s AND command_name=%s", (target["user_id"], cmd))
+            conn.commit()
+    await message.answer(f"❌ Доступ к /{cmd} у {get_mention(target['user_id'], target['first_name'])} отозван.")
+
+@router.message(Command("listpowers"))
+async def list_powers(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        return
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT command_name FROM secret_powers WHERE user_id=%s", (target["user_id"],))
+            cmds = [row[0] for row in cursor.fetchall()]
+    await message.answer(f"🔑 {get_mention(target['user_id'], target['first_name'])}: {', '.join(cmds) if cmds else 'нет'}")
+
+@router.message(Command("mypowers"))
+async def my_powers(message: Message):
+    user_id = message.from_user.id
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT command_name FROM secret_powers WHERE user_id=%s", (user_id,))
+            cmds = [row[0] for row in cursor.fetchall()]
+    if user_id == ADMIN_ID:
+        cmds = ["все секретные команды"]
+    await message.answer(f"🔑 Ваши команды: {', '.join(cmds)}")
+
+# ==================== ВЕБ-СЕРВЕР ====================
+async def handle_ping(request):
+    return web.Response(text="Bot is running!")
+
+async def web_server():
+    try:
+        app = web.Application()
+        app.router.add_get("/", handle_ping)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        port = int(os.environ.get("PORT", 10000))
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logging.info(f"Web server started on port {port}")
+    except Exception as e:
+        logging.warning(f"Веб-сервер не запущен: {e}")
+
+# ==================== ЗАПУСК ====================
 async def main():
-    # Если BOT_USERNAME не задан в env, получим его автоматически
     global BOT_USERNAME
-    if not BOT_USERNAME:
-        try:
-            me = await bot.me()
-            BOT_USERNAME = me.username
-            logging.info(f"Имя бота получено: @{BOT_USERNAME}")
-        except Exception as e:
-            logging.error(f"Не удалось получить имя бота: {e}. Ссылки на бонус могут не работать.")
+    bot_info = await bot.get_me()
+    if bot_info.username:
+        BOT_USERNAME = bot_info.username
+    dp.include_router(router)
+    await bot.delete_webhook(drop_pending_updates=True)
+    await web_server()  # не блокирует поллинг
+    logging.info("Бот CreditMania запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
