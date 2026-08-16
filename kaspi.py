@@ -1249,7 +1249,11 @@ def parse_roulette_target(target_str: str):
     elif "-" in t:
         try:
             s,e = map(int, t.split("-"))
-            if 0<=s<=36 and 0<=e<=36 and s<=e: return t,f"{s}-{e}"
+            if 0 <= s <= 36 and 0 <= e <= 36 and s <= e:
+                # Защита: если диапазон больше 18 чисел или это полное поле 0-36, аннулируем ставку
+                if (e - s + 1) > 18 or (s == 0 and e == 36):
+                    return None, None
+                return t, f"{s}-{e}"
         except: pass
     elif t.isdigit():
         val = int(t)
@@ -1271,19 +1275,26 @@ async def roulette_bets_list(message: Message):
     bets = chat_roulette_bets.get(chat_id, [])
     if not bets: await message.answer("📋 Нет активных ставок."); return
     text = "📋 <b>Активные ставки</b>\n\n"
-    for b in bets:
-        mention = get_mention(b["user_id"], b["user_name"])
-        emoji = choice_emoji(b["choice_display"])
-        text += f"• {mention} — {b['bet']} ₸ на {emoji} {b['choice_display']}\n"
-    await message.answer(text)
-
-@router.message(F.text.lower() == "лог")
-async def cmd_roulette_log(message: Message):
-    if not check_group_only(message, "рулетка"): return
-    history = get_roulette_history()
-    if not history: await message.answer("📜 История пуста."); return
-    lines = [f"{item['roll']}{item['color']}" for item in history]
-    await message.answer("📜 <b>История рулетки</b>\n\n" + "\n".join(lines))
+   def parse_roulette_target(target_str: str):
+    t = target_str.lower()
+    if t in ["к","red","красное"]: return "к","RED"
+    elif t in ["ч","black","черное"]: return "ч","BLACK"
+    elif t in ["even","чет"]: return "even","EVEN"
+    elif t in ["odd","нечет"]: return "odd","ODD"
+    elif t in ["1-12","13-24","25-36"]: return t,t
+    elif "-" in t:
+        try:
+            s,e = map(int, t.split("-"))
+            if 0 <= s <= 36 and 0 <= e <= 36 and s <= e:
+                # Защита от диапазона 0-36 и слишком широких диапазонов (> 18 чисел)
+                if (e - s + 1) > 18 or (s == 0 and e == 36):
+                    return None, None
+                return t, f"{s}-{e}"
+        except: pass
+    elif t.isdigit():
+        val = int(t)
+        if 0<=val<=36: return str(val),str(val)
+    return None,None
 
 @router.message(F.text.lower().in_(["го","старт"]))
 async def roulette_go(message: Message):
@@ -1351,6 +1362,8 @@ async def roulette_go(message: Message):
                     cursor.execute("UPDATE users SET games_played = games_played + 1 WHERE user_id = %s", (b["user_id"],))
                     conn.commit()
             res_lines.append(f"{mention} ставка {bet} ₸ проиграл")
+            
+    # Не забудьте в конце отправить res_lines в чат (если у вас это было дальше по логике, оставьте как есть)
     keyboard_rows = []
     unique_users_in_bets = {}
     for b in valid_bets:
