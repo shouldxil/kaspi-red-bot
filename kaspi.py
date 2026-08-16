@@ -648,7 +648,7 @@ async def cmd_transfer(message: Message):
     await message.answer(msg)
 
 # ---------- Админ-команды (обычные) ----------
-# Финансовые команды доступны только администраторам и выше, не модераторам.
+# Финансовые команды доступны только администраторам и выше, а не модераторам.
 @router.message(Command("addpromo"))
 async def admin_addpromo(message: Message):
     if not is_admin_or_above(message.from_user.id): return
@@ -878,16 +878,9 @@ def parse_roulette_target(target_str: str):
     elif t in ["ч","black","черное"]: return "ч","BLACK"
     elif t in ["even","чет"]: return "even","EVEN"
     elif t in ["odd","нечет"]: return "odd","ODD"
-    elif t in ["1-12","13-24","25-36"]: return t,t
-    elif "-" in t:
-        try:
-            s,e = map(int, t.split("-"))
-            if 0 <= s <= 36 and 0 <= e <= 36 and s <= e:
-                n = e - s + 1
-                if n <= 18:  # максимум половина колеса
-                    return t, f"{s}-{e}"
-        except:
-            pass
+    # Оставляем только официальные ставки казино
+    elif t in ["1-12","13-24","25-36","1-18","19-36"]:
+        return t, t
     elif t.isdigit():
         val = int(t)
         if 0 <= val <= 36:
@@ -961,8 +954,7 @@ async def roulette_go(message: Message):
         emoji = choice_emoji(b["choice_display"])
         res_lines.append(f"{mention} {b['bet']} ₸ на {emoji} {b['choice_display']}")
     res_lines.append("")
-    # Статистика: для каждого игрока увеличиваем games_played один раз за раунд
-    # и games_won если суммарный выигрыш > суммарной ставки
+    # Статистика по раунду, а не по каждой ставке
     player_stats = {}
     for b in valid_bets:
         choice = b["choice"]; bet = b["bet"]
@@ -973,16 +965,15 @@ async def roulette_go(message: Message):
         elif choice in ["odd","нечет"]: is_win = (roll!=0 and roll%2!=0); multi = 2
         elif choice in ["1-12","13-24","25-36"]:
             s,e = map(int, choice.split("-")); is_win = (s<=roll<=e); multi = 3
-        elif "-" in choice:
-            s,e = map(int, choice.split("-")); is_win = (s<=roll<=e)
-            n = e-s+1; multi = max(2, int(36/n))
-        else: is_win = (roll==int(choice)); multi = 36
+        elif choice in ["1-18","19-36"]:
+            s,e = map(int, choice.split("-")); is_win = (s<=roll<=e); multi = 2
+        else:
+            is_win = (roll==int(choice)); multi = 36
         mention = get_mention(b["user_id"], b["user_name"])
         if is_win:
             win_amount = bet * multi
             update_balance(b["user_id"], win_amount)
             res_lines.append(f"{mention} ставка {bet} ₸ выиграл {format_balance(win_amount)} на {b['choice_display']}")
-            # добавляем в статистику
             if b["user_id"] not in player_stats:
                 player_stats[b["user_id"]] = {"played": 1, "won": 0, "total_bet": bet, "total_win": win_amount}
             else:
@@ -995,7 +986,7 @@ async def roulette_go(message: Message):
             else:
                 player_stats[b["user_id"]]["total_bet"] += bet
 
-    # Обновляем статистику после раунда
+    # Обновляем статистику один раз за раунд для каждого игрока
     for uid, stats in player_stats.items():
         with get_db() as conn:
             with conn.cursor() as cursor:
@@ -1058,8 +1049,8 @@ async def generic_message_handler(message: Message):
         return
 
     # Лимит объектов в одной ставке
-    if len(targets) > 20:
-        await message.answer("❌ Максимум 20 объектов в одной ставке.")
+    if len(targets) > 5:
+        await message.answer("❌ Максимум 5 объектов в одной ставке, чтобы бот не зависал.")
         return
 
     valid_targets = []
