@@ -40,7 +40,6 @@ dp = Dispatcher()
 router = Router()
 
 def get_animation_file():
-    # Возвращаем новый объект файла каждый раз, чтобы избежать краша из-за закрытого I/O
     if os.path.exists("red-1.mp4"):
         return FSInputFile("red-1.mp4")
     return None
@@ -50,9 +49,9 @@ DB_POOL = None
 def init_db_pool():
     global DB_POOL
     DB_POOL = pool.ThreadedConnectionPool(
-        minconn=1, maxconn=20,
+        minconn=1, maxconn=3,
         host=DB_HOST, database=DB_NAME, user=DB_USER,
-        password=DB_PASSWORD, port=DB_PORT, sslmode='require'
+        password=DB_PASSWORD, port=DB_PORT, sslmode='prefer', connect_timeout=10
     )
     logging.info("Connection Pool PostgreSQL создан.")
 
@@ -62,7 +61,7 @@ def get_db():
     try:
         yield conn
     except Exception as e:
-        conn.rollback()  # Важнейший фикс: откат транзакции при ошибке!
+        conn.rollback()
         raise e
     finally:
         DB_POOL.putconn(conn)
@@ -71,7 +70,6 @@ def init_db():
     init_db_pool()
     with get_db() as conn:
         with conn.cursor() as cursor:
-            # Создание таблиц, если их нет
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -79,7 +77,6 @@ def init_db():
                     balance BIGINT DEFAULT 1000, last_bonus TEXT
                 )""")
             
-            # Безопасное добавление колонок через IF NOT EXISTS
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INT DEFAULT 0")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS games_won INT DEFAULT 0")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id BIGINT")
@@ -159,7 +156,6 @@ def init_db():
     logging.info("БД инициализирована.")
 
 
-# ---------- Хелперы ----------
 def get_user(user_id: int, first_name: str = "", last_name: str = "", username: str = "") -> dict:
     safe_name = first_name if first_name else "Игрок"
     with get_db() as conn:
@@ -306,7 +302,6 @@ def log_admin_action(admin_id: int, action: str, target_id: int = 0, amount: int
             conn.commit()
 
 def get_mention(user_id: int, first_name: str) -> str:
-    # Защита от HTML инъекций в никах (ошибка парсера Aiogram)
     safe_name = html.escape(first_name) if first_name else "Игрок"
     return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
 
@@ -327,7 +322,7 @@ async def check_group_only(message: Message, game_name: str) -> bool:
 def format_balance(amount: int) -> str:
     return f"{amount:,}".replace(",", " ")
 
-# ---------- Клавиатуры и бонус ----------
+
 def get_main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -381,7 +376,7 @@ async def process_bonus_logic(user_id: int, first_name: str, is_group_context: b
     updated_user = get_user(user_id)
     return f"🎁 {mention} получил бонус <b>{format_balance(b_amt)} CRD</b> 💰!\n\n👤 {mention}\n💰 Баланс: {format_balance(updated_user['balance'])} CRD"
 
-# ---------- Основные команды ----------
+
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
@@ -628,7 +623,7 @@ async def cmd_transfer(message: Message):
     if comment: msg += f"\n💬 Комментарий: <i>{comment}</i>"
     await message.answer(msg)
 
-# ---------- Админ-команды ----------
+
 @router.message(Command("addpromo"))
 async def admin_addpromo(message: Message):
     if not is_admin_or_above(message.from_user.id): return
@@ -797,7 +792,7 @@ async def admin_enable(message: Message):
             conn.commit()
     await message.answer(f"✅ Игра <b>{game}</b> включена.")
 
-# ==================== ИГРЫ ====================
+
 REDS = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
 chat_roulette_bets = {}
 chat_last_bet_time = {}
@@ -933,7 +928,7 @@ async def roulette_go(message: Message):
 @router.callback_query(F.data.startswith("rl_rep_") | F.data.startswith("rl_dbl_"))
 async def roulette_action_callback(callback: CallbackQuery):
     data = callback.data; parts = data.split("_"); action = parts[1]; target_uid = int(parts[2])
-    if callback.from_user.id != target_uid: await callback.answer("❌ Не ваша ставка!", show_alert=True); return
+    if callback.fromuser.id != target_uid: await callback.answer("❌ Не ваша ставка!", show_alert=True); return
     user_id = target_uid
     user = get_user(user_id, callback.from_user.first_name or "", callback.from_user.last_name or "", callback.from_user.username or "")
     last_bets = get_last_bets(user_id)
@@ -1022,7 +1017,7 @@ async def generic_message_handler(message: Message):
     displays_str = ", ".join(displays)
     await message.answer(f"Ставка принята: {mention} всего {total_bet} CRD ({displays_str})")
 
-# ---------- Джокер ----------
+
 joker_sessions = {}
 JOKER_MULTIS = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0]
 
@@ -1110,7 +1105,7 @@ async def joker_callback(callback: CallbackQuery):
                 f"{mention}, вы продолжаете игру Джокер!\n💰 Ставка: {sess['bet']} CRD\n💵 Выигрыш: x{JOKER_MULTIS[lvl]} = {cur_win} CRD",
                 reply_markup=get_joker_kb(session_id, finished=False))
 
-# ---------- Мины ----------
+
 mines_sessions = {}
 MINES_MULTIS = [1.25, 1.60, 2.15, 3.20, 5.30, 8.50, 10.50]
 
@@ -1190,7 +1185,7 @@ async def mines_callback(callback: CallbackQuery):
                 get_mines_text(mention, sess["bet"], multi, current_win),
                 reply_markup=get_mines_kb(session_id, sess["opened"], False))
 
-# ---------- Coinflip ----------
+
 coinflip_sessions = {}
 
 @router.message(F.text.lower().startswith("coinflip"))
@@ -1241,7 +1236,7 @@ async def coinflip_callback(callback: CallbackQuery):
         await callback.message.edit_text(f"🪙 Выпало: {emoji}\n❌ Вы проиграли <b>{format_balance(sess['bet'])}</b> CRD.")
     await callback.answer()
 
-# ---------- Дуэли ----------
+
 duels = {}
 
 @router.message(F.text.lower().startswith("дуэль"))
@@ -1392,7 +1387,7 @@ async def duel_choice_callback(callback: CallbackQuery):
         await callback.message.edit_text(res_text)
 
 
-# ==================== ЗАПУСК БОТА ====================
+
 async def main():
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
