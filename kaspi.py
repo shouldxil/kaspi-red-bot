@@ -878,7 +878,7 @@ def parse_roulette_target(target_str: str):
     elif t in ["ч","black","черное"]: return "ч","BLACK"
     elif t in ["even","чет"]: return "even","EVEN"
     elif t in ["odd","нечет"]: return "odd","ODD"
-    # Оставляем только официальные ставки казино
+    # Только официальные ставки казино
     elif t in ["1-12","13-24","25-36","1-18","19-36"]:
         return t, t
     elif t.isdigit():
@@ -954,7 +954,6 @@ async def roulette_go(message: Message):
         emoji = choice_emoji(b["choice_display"])
         res_lines.append(f"{mention} {b['bet']} ₸ на {emoji} {b['choice_display']}")
     res_lines.append("")
-    # Статистика по раунду, а не по каждой ставке
     player_stats = {}
     for b in valid_bets:
         choice = b["choice"]; bet = b["bet"]
@@ -986,7 +985,6 @@ async def roulette_go(message: Message):
             else:
                 player_stats[b["user_id"]]["total_bet"] += bet
 
-    # Обновляем статистику один раз за раунд для каждого игрока
     for uid, stats in player_stats.items():
         with get_db() as conn:
             with conn.cursor() as cursor:
@@ -1048,7 +1046,6 @@ async def generic_message_handler(message: Message):
     if not targets:
         return
 
-    # Лимит объектов в одной ставке
     if len(targets) > 5:
         await message.answer("❌ Максимум 5 объектов в одной ставке, чтобы бот не зависал.")
         return
@@ -1100,7 +1097,6 @@ async def generic_message_handler(message: Message):
     save_last_bets(user["user_id"], new_user_bets)
 
     mention = get_mention(user["user_id"], user["first_name"])
-    # Краткое сообщение без перечисления всех ставок
     await message.answer(
         f"✅ Ставка принята: {mention}\n"
         f"💰 Всего: {format_balance(total_bet)} | Ставок: {len(valid_targets)}"
