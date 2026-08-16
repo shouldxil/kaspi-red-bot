@@ -4,6 +4,7 @@ import random
 import os
 import re
 import json
+import html
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from aiohttp import web
@@ -952,7 +953,6 @@ async def roulette_go(message: Message):
     chat_roulette_bets[chat_id] = []
     valid_bets = []
     for b in bets_to_play:
-        # средства уже списаны при приёме, просто добавляем ставку
         valid_bets.append(b)
     if not valid_bets: return
     try:
@@ -1035,7 +1035,6 @@ async def roulette_action_callback(callback: CallbackQuery):
     multiplier = 2 if action=="dbl" else 1
     total_cost = sum(b["bet"]*multiplier for b in last_bets)
     if user["balance"] < total_cost: await callback.answer(f"❌ Недостаточно средств! Требуется {format_balance(total_cost)}", show_alert=True); return
-    # Списываем сразу
     update_balance(user_id, -total_cost)
     chat_id = callback.message.chat.id
     if chat_id not in chat_roulette_bets: chat_roulette_bets[chat_id] = []
@@ -1071,8 +1070,9 @@ async def generic_message_handler(message: Message):
     valid_targets = []
     for tgt in targets:
         code, display = parse_roulette_target(tgt)
-        if code is not None:
-            valid_targets.append((code, display))
+        if code is None:
+            return  # если есть постороннее слово — это не ставка
+        valid_targets.append((code, display))
 
     if not valid_targets:
         return
@@ -1091,7 +1091,6 @@ async def generic_message_handler(message: Message):
         await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
         return
 
-    # Списываем сразу
     update_balance(user["user_id"], -total_bet)
 
     chat_id = message.chat.id
@@ -1387,7 +1386,6 @@ async def duel_accept_timeout(duel_id, msg: Message):
 @router.callback_query(F.data.startswith("duel_"))
 async def duel_init_callback(callback: CallbackQuery):
     try:
-        # Используем rsplit, чтобы корректно обработать отрицательный ID чата
         _, action, duel_id = callback.data.split("_", 2)
     except ValueError:
         await callback.answer("❌ Ошибка обработки данных дуэли.", show_alert=True)
@@ -1437,9 +1435,8 @@ async def rps_callback(callback: CallbackQuery):
     parts = callback.data.split("_")
     if len(parts) != 4:
         return
-    _, _, duel_id_part1, duel_id_part2 = parts
-    duel_id = f"{duel_id_part1}_{duel_id_part2}"
-    choice = parts[4] if len(parts) > 4 else None
+    _, chat_id_part, message_id_part, choice = parts
+    duel_id = f"{chat_id_part}_{message_id_part}"
     if duel_id not in duels: await callback.answer("Дуэль устарела."); return
     duel = duels[duel_id]; uid = callback.from_user.id
     if uid == duel["p1_id"]: duel["p1_choice"] = choice
@@ -1650,9 +1647,14 @@ async def secret_globalbonus(message: Message):
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit(): return
     amt = int(args[1])
+    hours = int(get_setting("bonus_cooldown", "8"))
+    threshold = datetime.now() - timedelta(hours=hours)
     with get_db() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("UPDATE users SET balance = balance + %s WHERE last_bonus > %s", (amt, (datetime.now() - timedelta(hours=24)).isoformat()))
+            cursor.execute(
+                "UPDATE users SET balance = balance + %s WHERE last_bonus IS NOT NULL AND last_bonus > %s",
+                (amt, threshold.isoformat())
+            )
             conn.commit()
     await message.answer(f"✅ Глобальный бонус <b>{format_balance(amt)}</b> выдан активным игрокам.")
 
@@ -1742,7 +1744,7 @@ async def secret_sql(message: Message):
                 cursor.execute(query)
                 if cursor.description: rows = cursor.fetchall()[:10]; text = "\n".join(str(r) for r in rows)
                 else: conn.commit(); text = "Запрос выполнен."
-        await message.answer(f"<code>{text}</code>")
+        await message.answer(f"<code>{html.escape(text)}</code>")
     except Exception as e: await message.answer(f"❌ {e}")
 
 @router.message(Command("emergency_stop"))
