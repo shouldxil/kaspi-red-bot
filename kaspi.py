@@ -2,11 +2,10 @@ import asyncio
 import logging
 import random
 import os
-import re
 import json
+import html
 from datetime import datetime, timedelta
 from contextlib import contextmanager
-from aiohttp import web
 import psycopg2
 from psycopg2 import pool
 
@@ -20,8 +19,7 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     KeyboardButton,
-    FSInputFile,
-    BufferedInputFile
+    FSInputFile
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -41,13 +39,11 @@ bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 router = Router()
 
-CACHED_ANIMATION = None
-
-def get_cached_animation():
-    global CACHED_ANIMATION
-    if CACHED_ANIMATION is None and os.path.exists("red-1.mp4"):
-        CACHED_ANIMATION = FSInputFile("red-1.mp4")
-    return CACHED_ANIMATION
+def get_animation_file():
+    # Возвращаем новый объект файла каждый раз, чтобы избежать краша из-за закрытого I/O
+    if os.path.exists("red-1.mp4"):
+        return FSInputFile("red-1.mp4")
+    return None
 
 DB_POOL = None
 
@@ -162,14 +158,12 @@ def init_db():
             conn.commit()
     logging.info("БД инициализирована.")
 
-init_db()
 
 # ---------- Хелперы ----------
 def get_user(user_id: int, first_name: str = "", last_name: str = "", username: str = "") -> dict:
     safe_name = first_name if first_name else "Игрок"
     with get_db() as conn:
         with conn.cursor() as cursor:
-            # Безопасный инсерт без гонки данных
             cursor.execute("""
                 INSERT INTO users (user_id, first_name, last_name, username, balance, last_bonus, games_played, games_won) 
                 VALUES (%s,%s,%s,%s,%s,%s,0,0) 
@@ -194,7 +188,7 @@ def find_user_by_identifier(identifier: str):
         with get_db() as conn:
             with conn.cursor() as cursor:
                 if clean_id.isdigit():
-                    if len(clean_id) > 18: return None # Защита от Postgres BIGINT Overflow
+                    if len(clean_id) > 18: return None
                     cursor.execute("SELECT user_id, first_name, last_name, username, balance, last_bonus, games_played, games_won, referrer_id, referred_count, last_daily FROM users WHERE user_id = %s", (int(clean_id),))
                 else:
                     cursor.execute("SELECT user_id, first_name, last_name, username, balance, last_bonus, games_played, games_won, referrer_id, referred_count, last_daily FROM users WHERE LOWER(username) = LOWER(%s)", (clean_id,))
@@ -227,16 +221,6 @@ def is_admin_or_above(user_id: int) -> bool:
 
 def is_head_or_above(user_id: int) -> bool:
     return get_rank(user_id) in ("owner", "head")
-
-def is_owner(user_id: int) -> bool:
-    return user_id == ADMIN_ID
-
-def has_secret_power(user_id: int, command: str) -> bool:
-    if user_id == ADMIN_ID: return True
-    with get_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT 1 FROM secret_powers WHERE user_id = %s AND command_name = %s", (user_id, command))
-            return cursor.fetchone() is not None
 
 def is_game_disabled(game_name: str) -> bool:
     with get_db() as conn:
@@ -321,28 +305,9 @@ def log_admin_action(admin_id: int, action: str, target_id: int = 0, amount: int
                 (admin_id, action, target_id, amount, datetime.now().isoformat()))
             conn.commit()
 
-def save_balance_checkpoint(user_id: int):
-    user = get_user(user_id)
-    with get_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO balance_checkpoints (user_id, balance, checkpoint_time) VALUES (%s,%s,%s)",
-                (user_id, user['balance'], datetime.now().isoformat()))
-            conn.commit()
-
-def restore_last_checkpoint(user_id: int) -> bool:
-    with get_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT balance FROM balance_checkpoints WHERE user_id=%s ORDER BY checkpoint_time DESC LIMIT 1", (user_id,))
-            row = cursor.fetchone()
-            if row:
-                cursor.execute("UPDATE users SET balance=%s WHERE user_id=%s", (row[0], user_id))
-                conn.commit()
-                return True
-    return False
-
 def get_mention(user_id: int, first_name: str) -> str:
-    safe_name = first_name if first_name else "Игрок"
+    # Защита от HTML инъекций в никах (ошибка парсера Aiogram)
+    safe_name = html.escape(first_name) if first_name else "Игрок"
     return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
 
 def in_group(message: Message) -> bool:
@@ -663,7 +628,7 @@ async def cmd_transfer(message: Message):
     if comment: msg += f"\n💬 Комментарий: <i>{comment}</i>"
     await message.answer(msg)
 
-# ---------- Админ-команды (обычные) ----------
+# ---------- Админ-команды ----------
 @router.message(Command("addpromo"))
 async def admin_addpromo(message: Message):
     if not is_admin_or_above(message.from_user.id): return
@@ -806,56 +771,6 @@ async def admin_list(message: Message):
         text += f"{get_rank_emoji(r[1])} {get_mention(r[0], u['first_name'])}\n"
     await message.answer(text)
 
-@router.message(Command("setbonus"))
-async def admin_setbonus(message: Message):
-    if not is_head_or_above(message.from_user.id): return
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        await message.answer(f"🎁 Текущий бонус: <b>{get_setting('bonus_amount','3000')} CRD</b>"); return
-    amount = int(args[1])
-    set_setting("bonus_amount", str(amount))
-    log_admin_action(message.from_user.id, f"setbonus {amount}")
-    await message.answer(f"✅ Бонус изменён на <b>{amount} CRD</b>")
-
-@router.message(Command("setcooldown"))
-async def admin_setcooldown(message: Message):
-    if not is_head_or_above(message.from_user.id): return
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        await message.answer("❌ Использование: /setcooldown 8"); return
-    hours = int(args[1])
-    set_setting("bonus_cooldown", str(hours))
-    log_admin_action(message.from_user.id, f"setcooldown {hours}")
-    await message.answer(f"✅ Кулдаун бонуса изменён на <b>{hours} ч.</b>")
-
-@router.message(Command("stats"))
-async def admin_stats(message: Message):
-    if not is_admin_or_above(message.from_user.id): return
-    with get_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT COUNT(*), COALESCE(SUM(balance),0) FROM users")
-            users_count, total_balance = cursor.fetchone()
-    await message.answer(f"📊 <b>Статистика</b>\n👥 Пользователей: <b>{users_count}</b>\n💰 Общий баланс: <b>{format_balance(total_balance or 0)}</b> CRD")
-
-@router.message(Command("broadcast"))
-async def admin_broadcast(message: Message):
-    if not is_admin_or_above(message.from_user.id): return
-    text = message.text.replace("/broadcast", "").strip()
-    if not text: await message.answer("❌ Использование: /broadcast текст"); return
-    with get_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT user_id FROM users")
-            users = [row[0] for row in cursor.fetchall()]
-    success = 0; failed = 0
-    status_msg = await message.answer(f"📢 Рассылка началась (0/{len(users)})...")
-    for u_id in users:
-        try:
-            await bot.send_message(int(u_id), f"📢 <b>Объявление</b>\n\n{text}")
-            success += 1
-            await asyncio.sleep(0.05)
-        except: failed += 1
-    await status_msg.edit_text(f"✅ Рассылка завершена!\n📤 Успешно: {success}\n❌ Ошибок: {failed}")
-
 @router.message(Command("disable"))
 async def admin_disable(message: Message):
     if not is_head_or_above(message.from_user.id): return
@@ -959,7 +874,7 @@ async def roulette_go(message: Message):
             valid_bets.append(b)
     if not valid_bets: return
     try:
-        animation_file = get_cached_animation()
+        animation_file = get_animation_file()
         if animation_file: sent_msg = await message.answer_animation(animation=animation_file)
         else: sent_msg = await message.answer("🎰 Крутим рулетку...")
         await asyncio.sleep(5)
@@ -1041,7 +956,6 @@ async def roulette_action_callback(callback: CallbackQuery):
     mention = get_mention(user_id, user["first_name"])
     await callback.message.answer(f"Ставка принята: {mention} всего {total_cost} CRD ({', '.join(displays)})")
 
-# ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
 @router.message(F.text)
 async def generic_message_handler(message: Message):
     if message.text.startswith("/"): return
@@ -1366,41 +1280,125 @@ async def duel_accept_timeout(duel_id, msg: Message):
             try: await msg.edit_text("⏱ Время вышло! Ничья, ставки возвращены.")
             except: pass
 
-@router.callback_query(F.data.startswith("duel_"))
+@router.callback_query(F.data.startswith("duel_") & ~F.data.startswith("duel_choice_"))
 async def duel_init_callback(callback: CallbackQuery):
-    parts = callback.data.split("_"); action = parts[1]; duel_id = f"{parts[2]}_{parts[3]}"
-    if duel_id not in duels: await callback.answer("Дуэль устарела."); return
-    duel = duels[duel_id]; uid = callback.from_user.id
-    if action == "den":
-        if uid not in (duel["p1_id"], duel["p2_id"]): await callback.answer("Вы не участник!"); return
-        del duels[duel_id]; await callback.message.edit_text("❌ Дуэль отклонена.")
+    parts = callback.data.split("_")
+    action = parts[1]
+    duel_id = f"{parts[2]}_{parts[3]}"
+    
+    if duel_id not in duels: 
+        await callback.answer("Дуэль устарела.")
         return
+        
+    duel = duels[duel_id]
+    uid = callback.from_user.id
+    
+    if action == "den":
+        if uid not in (duel["p1_id"], duel["p2_id"]): 
+            await callback.answer("Вы не участник!")
+            return
+        del duels[duel_id]
+        await callback.message.edit_text("❌ Дуэль отклонена.")
+        return
+        
     if action == "acc":
-        if uid != duel["p2_id"]: await callback.answer("Сражаться может только вызываемый!"); return
-        u1 = get_user(duel["p1_id"]); u2 = get_user(duel["p2_id"])
+        if uid != duel["p2_id"]: 
+            await callback.answer("Сражаться может только вызываемый!")
+            return
+        u1 = get_user(duel["p1_id"])
+        u2 = get_user(duel["p2_id"])
         if u1["balance"] < duel["bet"] or u2["balance"] < duel["bet"]:
-            await callback.message.edit_text("❌ Недостаточно средств."); del duels[duel_id]; return
+            await callback.message.edit_text("❌ Недостаточно средств.")
+            del duels[duel_id]
+            return
+            
         duel["accepted"] = True
-        update_balance(duel["p1_id"], -duel["bet"]); update_balance(duel["p2_id"], -duel["bet"])
-        p1_mention = get_mention(duel["p1_id"], duel["p1_name"]); p2_mention = get_mention(duel["p2_id"], duel["p2_name"])
-        kb1 = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButtonПривет. Прекрасно понимаю твоё состояние — когда 8 раз бьёшься об одни и те же ошибки в логах, это реально вымораживает. 
+        update_balance(duel["p1_id"], -duel["bet"])
+        update_balance(duel["p2_id"], -duel["bet"])
+        p1_mention = get_mention(duel["p1_id"], duel["p1_name"])
+        p2_mention = get_mention(duel["p2_id"], duel["p2_name"])
+        
+        kb_game = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🪨 Камень", callback_data=f"duel_choice_{duel_id}_rock"),
+            InlineKeyboardButton(text="✂️ Ножницы", callback_data=f"duel_choice_{duel_id}_scissors"),
+            InlineKeyboardButton(text="📄 Бумага", callback_data=f"duel_choice_{duel_id}_paper")
+        ]])
+        await callback.message.edit_text(f"⚔️ Дуэль началась!\n{p1_mention} и {p2_mention}, сделайте свой выбор!", reply_markup=kb_game)
 
-Я проанализировал твой код. У тебя там были спрятаны несколько очень неприятных «бомб замедленного действия», которые крашили бота (особенно при деплое на Render):
+@router.callback_query(F.data.startswith("duel_choice_"))
+async def duel_choice_callback(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    duel_id = f"{parts[2]}_{parts[3]}"
+    choice = parts[4]
+    
+    if duel_id not in duels:
+        await callback.answer("Дуэль завершена или устарела.")
+        return
+        
+    duel = duels[duel_id]
+    uid = callback.from_user.id
+    
+    if uid == duel["p1_id"]:
+        if duel["p1_choice"]:
+            await callback.answer("Вы уже сделали выбор!")
+            return
+        duel["p1_choice"] = choice
+        await callback.answer("Выбор принят!")
+    elif uid == duel["p2_id"]:
+        if duel["p2_choice"]:
+            await callback.answer("Вы уже сделали выбор!")
+            return
+        duel["p2_choice"] = choice
+        await callback.answer("Выбор принят!")
+    else:
+        await callback.answer("Вы не участник этой дуэли!")
+        return
+        
+    if duel["p1_choice"] and duel["p2_choice"]:
+        c1 = duel["p1_choice"]
+        c2 = duel["p2_choice"]
+        win_map = {"rock": "scissors", "scissors": "paper", "paper": "rock"}
+        emoji_map = {"rock": "🪨", "scissors": "✂️", "paper": "📄"}
+        
+        p1_mention = get_mention(duel["p1_id"], duel["p1_name"])
+        p2_mention = get_mention(duel["p2_id"], duel["p2_name"])
+        
+        res_text = f"⚔️ Результаты дуэли:\n{p1_mention}: {emoji_map[c1]}\n{p2_mention}: {emoji_map[c2]}\n\n"
+        
+        if c1 == c2:
+            update_balance(duel["p1_id"], duel["bet"])
+            update_balance(duel["p2_id"], duel["bet"])
+            res_text += "Ничья! Ставки возвращены."
+        elif win_map[c1] == c2:
+            win_amount = duel["bet"] * 2
+            update_balance(duel["p1_id"], win_amount)
+            res_text += f"🏆 Победил {p1_mention} и забрал {format_balance(win_amount)} CRD!"
+            with get_db() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE users SET games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = %s", (duel["p1_id"],))
+                    cursor.execute("UPDATE users SET games_played = games_played + 1 WHERE user_id = %s", (duel["p2_id"],))
+                    conn.commit()
+        else:
+            win_amount = duel["bet"] * 2
+            update_balance(duel["p2_id"], win_amount)
+            res_text += f"🏆 Победил {p2_mention} и забрал {format_balance(win_amount)} CRD!"
+            with get_db() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE users SET games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = %s", (duel["p2_id"],))
+                    cursor.execute("UPDATE users SET games_played = games_played + 1 WHERE user_id = %s", (duel["p1_id"],))
+                    conn.commit()
+                    
+        del duels[duel_id]
+        await callback.message.edit_text(res_text)
 
-1. **Поломка транзакций PostgreSQL (Самая частая причина ошибок в логах):** В функции инициализации БД ты использовал конструкцию `try...except` для добавления колонок. Если колонка уже существовала, PostgreSQL выдавал ошибку, и из-за отсутствия отката (`conn.rollback()`) соединение переходило в статус `InFailedSqlTransaction`. Из-за этого *абсолютно все* последующие запросы к БД ломались, а бот просто переставал нормально работать. Я заменил это на нативный и безопасный SQL-синтаксис `ADD COLUMN IF NOT EXISTS` и добавил автоматический откат при ошибках в пул соединений.
-2. **Краш анимации рулетки:** Сохранение `FSInputFile` в глобальную переменную `CACHED_ANIMATION` — это ловушка. После того как aiogram отправляет видео первый раз, он закрывает этот файл. При следующем запуске рулетки бот пытался прочитать уже закрытый файл и намертво падал с ошибкой ввода-вывода (I/O). Я переписал функцию так, чтобы файл инициализировался при каждом вызове.
-3. **Проблемы с проверкой чата:** Функция `check_group_only` была синхронной, но внутри вызывала асинхронную отправку сообщения через `asyncio.create_task()`. Из-за этого проверки работали вразнобой, а aiogram ругался. Теперь она полноценно асинхронная (с `await`).
-4. **Краш HTML парсера:** Если у пользователя в нике или имени были символы `<` или `>`, Telegram API отклонял отправку сообщения из-за сломанной HTML-разметки. Добавил экранирование в `get_mention`.
 
-Держи полностью исправленный код. Просто скопируй его, замени старый файл целиком и перезапусти бота. Ошибки в логах должны исчезнуть.
+# ==================== ЗАПУСК БОТА ====================
+async def main():
+    dp.include_router(router)
+    await bot.delete_webhook(drop_pending_updates=True)
+    logging.info("Бот успешно запущен!")
+    await dp.start_polling(bot)
 
-```python
-import asyncio
-import logging
-import random
-import os
-import re
-import json
-from datetime import datetime, timedelta
-from contextlib import contextmanager
+if __name__ == "__main__":
+    init_db()
+    asyncio.run(main())
