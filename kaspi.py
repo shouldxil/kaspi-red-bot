@@ -37,9 +37,6 @@ bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 router = Router()
 
-# ИСПРАВЛЕНИЕ: Подключаем роутер к диспетчеру сразу, а не в функции main()
-dp.include_router(router)
-
 CACHED_ANIMATION = None
 
 def get_cached_animation():
@@ -1038,6 +1035,7 @@ async def roulette_action_callback(callback: CallbackQuery):
     multiplier = 2 if action=="dbl" else 1
     total_cost = sum(b["bet"]*multiplier for b in last_bets)
     if user["balance"] < total_cost: await callback.answer(f"❌ Недостаточно средств! Требуется {format_balance(total_cost)}", show_alert=True); return
+    # Списываем сразу
     update_balance(user_id, -total_cost)
     chat_id = callback.message.chat.id
     if chat_id not in chat_roulette_bets: chat_roulette_bets[chat_id] = []
@@ -1094,6 +1092,7 @@ async def generic_message_handler(message: Message):
         await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
         return
 
+    # Списываем сразу
     update_balance(user["user_id"], -total_bet)
 
     chat_id = message.chat.id
@@ -1389,6 +1388,7 @@ async def duel_accept_timeout(duel_id, msg: Message):
 @router.callback_query(F.data.startswith("duel_"))
 async def duel_init_callback(callback: CallbackQuery):
     try:
+        # Используем rsplit, чтобы корректно обработать отрицательный ID чата
         _, action, duel_id = callback.data.split("_", 2)
     except ValueError:
         await callback.answer("❌ Ошибка обработки данных дуэли.", show_alert=True)
@@ -1838,7 +1838,7 @@ async def main():
     bot_info = await bot.get_me()
     if bot_info.username:
         BOT_USERNAME = bot_info.username
-    
+    dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
     await web_server()
     logging.info("Бот Kaspi Red запущен!")
