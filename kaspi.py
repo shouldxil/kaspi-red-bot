@@ -37,6 +37,9 @@ bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 router = Router()
 
+# ИСПРАВЛЕНИЕ: Подключаем роутер к диспетчеру сразу, а не в функции main()
+dp.include_router(router)
+
 CACHED_ANIMATION = None
 
 def get_cached_animation():
@@ -1835,7 +1838,7 @@ async def main():
     bot_info = await bot.get_me()
     if bot_info.username:
         BOT_USERNAME = bot_info.username
-    dp.include_router(router)
+    
     await bot.delete_webhook(drop_pending_updates=True)
     await web_server()
     logging.info("Бот Kaspi Red запущен!")
