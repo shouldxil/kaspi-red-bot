@@ -4,7 +4,6 @@ import random
 import os
 import re
 import json
-import html
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from aiohttp import web
@@ -430,10 +429,10 @@ async def cmd_start(message: Message):
                             conn.commit()
         except: pass
     if in_group(message):
-        await message.answer("Привет! Я бот Kaspi Red. Напиши мне в личные сообщения для главного меню.")
+        await message.answer("Привет! Я бот CreditMania. Напиши мне в личные сообщения для главного меню.")
         return
     welcome_text = (
-        "👋 Добро пожаловать в Kaspi Red!\n\n"
+        "👋 Добро пожаловать в CreditMania!\n\n"
         "🎰 Игры: Рулетка, Джокер, Мины, Дуэли\n"
         "💎 Валюта: ₸ (тенге)\n"
         "💰 Начальный баланс: 4 000 ₸\n\n"
@@ -444,11 +443,11 @@ async def cmd_start(message: Message):
 
 @router.message(F.text == "📢 Новости")
 async def cmd_news_btn(message: Message):
-    await message.answer("Новостной канал скоро появится!")
+    await message.answer("Подпишись на канал @creditmania_news, чтобы первым узнавать об обновлениях и акциях!")
 
 @router.message(F.text == "💬 Чат")
 async def cmd_chat_btn(message: Message):
-    await message.answer("Общий чат скоро появится!")
+    await message.answer("Присоединяйся в общий чат @creditmania_chat, общайся с игроками!")
 
 @router.callback_query(F.data == "get_bonus_lc")
 async def callback_get_bonus(callback: CallbackQuery):
@@ -459,11 +458,10 @@ async def callback_get_bonus(callback: CallbackQuery):
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     text = (
-        "📋 <b>Справка по Kaspi Red</b>\n\n"
+        "📋 <b>Справка по CreditMania</b>\n\n"
         "• [ставка] [объекты...] — Рулетка\n"
         "• лог — История рулетки\n"
         "• ставки — Текущие ставки\n"
-        "• отмена — отменить свои ставки в рулетке\n"
         "• джокер [ставка] — Джокер\n"
         "• мины [ставка] — Минное поле\n"
         "• дуэль [ставка] — Дуэль (ответом на сообщение)\n"
@@ -483,7 +481,7 @@ async def cmd_commands_btn(message: Message):
 
 @router.message(Command("rules"))
 async def cmd_rules(message: Message):
-    await message.answer("https://teletype.in/@se7ze/rules")
+    await message.answer("https://teletype.in/@arrest1k/guqU_Obj9by")
 
 @router.message(F.text == "🎮 Мини-игры")
 async def cmd_minigames(message: Message):
@@ -499,11 +497,11 @@ async def cmd_minigames(message: Message):
 
 @router.message(F.text == "💬 Чаты")
 async def cmd_chats(message: Message):
-    await message.answer("💬 Общий чат: скоро")
+    await message.answer("💬 Общий чат: @creditmania_chat\n📢 Новости: @creditmania_news")
 
 @router.message(F.text == "🛒 Донат")
 async def cmd_donate(message: Message):
-    await message.answer("🛒 Поддержать бота: @se7ze")
+    await message.answer("🛒 Для покупки CRD и других услуг пиши @se7ze.")
 
 @router.message(Command("balance"))
 async def cmd_balance(message: Message):
@@ -677,7 +675,7 @@ async def admin_delpromo(message: Message):
 
 @router.message(Command("setbal"))
 async def admin_setbal(message: Message):
-    if not is_admin_or_above(message.from_user.id): return
+    if not is_moder_or_above(message.from_user.id): return
     args = message.text.split()
     if len(args) < 3 or not args[2].isdigit():
         await message.answer("Использование: /setbal @username [сумма]"); return
@@ -710,7 +708,7 @@ async def admin_info(message: Message):
 
 @router.message(F.text.lower().startswith("выдать "))
 async def admin_quick_give(message: Message):
-    if not is_admin_or_above(message.from_user.id): return
+    if not is_moder_or_above(message.from_user.id): return
     args = message.text.split()
     if len(args) < 3 or not args[2].isdigit():
         await message.answer("❌ Использование: выдать @username 5000"); return
@@ -723,7 +721,7 @@ async def admin_quick_give(message: Message):
 
 @router.message(Command("take"))
 async def admin_take(message: Message):
-    if not is_admin_or_above(message.from_user.id): return
+    if not is_moder_or_above(message.from_user.id): return
     args = message.text.split()
     if len(args) < 3 or not args[2].isdigit():
         await message.answer("❌ Использование: /take @username 500"); return
@@ -869,6 +867,374 @@ async def admin_enable(message: Message):
     await message.answer(f"✅ Игра <b>{game}</b> включена.")
 
 # ==================== ИГРЫ ====================
+# ---------- Джокер ----------
+joker_sessions = {}
+JOKER_MULTIS = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0]
+
+@router.message(F.text.lower().startswith("джокер"))
+async def game_joker(message: Message):
+    if not check_group_only(message, "джокер"): return
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("❌ Использование: джокер [ставка]")
+        return
+    bet = int(args[1])
+    if bet < MIN_BET: await message.answer(f"Минимальная ставка {MIN_BET} ₸"); return
+    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
+    if user["balance"] < bet: await message.answer("Недостаточно средств"); return
+    update_balance(user["user_id"], -bet)
+    session_id = f"{message.from_user.id}_{message.message_id}"
+    skull_pos = random.randint(0,2)
+    joker_sessions[session_id] = {
+        "user_id": user["user_id"], "user_name": user["first_name"],
+        "bet": bet, "level": 0, "skull_pos": skull_pos, "history": []
+    }
+    mention = get_mention(user["user_id"], user["first_name"])
+    await message.answer(
+        f"{mention}, вы начали игру Джокер!\n💰 Ставка: {format_balance(bet)}\n💵 Выигрыш: x{JOKER_MULTIS[0]} = {format_balance(bet)}",
+        reply_markup=get_joker_kb(session_id, finished=False)
+    )
+
+def get_joker_kb(session_id, finished=False):
+    sess = joker_sessions.get(session_id)
+    kb = []
+    if sess and "history" in sess:
+        for row in sess["history"]:
+            kb.append(row)
+    if not finished:
+        row = [
+            InlineKeyboardButton(text="🎴", callback_data=f"jk_{session_id}_0"),
+            InlineKeyboardButton(text="🎴", callback_data=f"jk_{session_id}_1"),
+            InlineKeyboardButton(text="🎴", callback_data=f"jk_{session_id}_2")
+        ]
+        kb.append(row)
+        # Зелёная кнопка после первого успешного хода
+        if sess and sess["level"] > 0:
+            btn_text = "🟢 💰 Забрать выигрыш"
+        else:
+            btn_text = "💰 Забрать выигрыш"
+        kb.append([InlineKeyboardButton(text=btn_text, callback_data=f"jk_cash_{session_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+@router.callback_query(F.data.startswith("jk_"))
+async def joker_callback(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    if parts[1] == "noop":
+        await callback.answer("Этаж пройден.")
+        return
+    if parts[1] == "cash":
+        session_id = f"{parts[2]}_{parts[3]}"
+        if session_id not in joker_sessions:
+            await callback.answer("Игра завершена.")
+            return
+        sess = joker_sessions[session_id]
+        if sess["user_id"] != callback.from_user.id:
+            await callback.answer("Чужая игра!")
+            return
+        lvl = sess["level"]
+        win = int(sess["bet"] * JOKER_MULTIS[lvl])
+        update_balance(sess["user_id"], win)
+        del joker_sessions[session_id]
+        mention = get_mention(sess["user_id"], sess["user_name"])
+        await callback.message.edit_text(f"{mention}, вы забрали выигрыш <b>{format_balance(win)}</b>!")
+        return
+
+    session_id = f"{parts[1]}_{parts[2]}"
+    choice = int(parts[3])
+    if session_id not in joker_sessions:
+        await callback.answer("Игра завершена.")
+        return
+    sess = joker_sessions[session_id]
+    if sess["user_id"] != callback.from_user.id:
+        await callback.answer("Чужая игра!")
+        return
+
+    skull_pos = sess["skull_pos"]
+    mention = get_mention(sess["user_id"], sess["user_name"])
+
+    if choice == skull_pos:
+        # Проигрыш – показываем только историю, без кнопки "Забрать"
+        row_buttons = []
+        for i in range(3):
+            if i == skull_pos:
+                row_buttons.append(InlineKeyboardButton(text="💀", callback_data="jk_noop"))
+            else:
+                row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
+        sess["history"].append(row_buttons)
+        del joker_sessions[session_id]
+        await callback.message.edit_text(
+            f"{mention}, вы проиграли! Проиграно {format_balance(sess['bet'])}.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"])
+        )
+        return
+
+    # Правильный выбор – открываем карту, скелет показываем
+    row_buttons = []
+    for i in range(3):
+        if i == choice:
+            row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))  # открытая карта
+        elif i == skull_pos:
+            row_buttons.append(InlineKeyboardButton(text="💀", callback_data="jk_noop"))
+        else:
+            row_buttons.append(InlineKeyboardButton(text="🃏", callback_data="jk_noop"))
+    sess["history"].append(row_buttons)
+    sess["level"] += 1
+    lvl = sess["level"]
+    sess["skull_pos"] = random.randint(0,2)
+
+    if lvl >= len(JOKER_MULTIS) - 1:
+        # Максимальный уровень – авто-выигрыш
+        win = int(sess["bet"] * JOKER_MULTIS[-1])
+        update_balance(sess["user_id"], win)
+        del joker_sessions[session_id]
+        await callback.message.edit_text(
+            f"{mention}, максимальный множитель! Выигрыш <b>{format_balance(win)}</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=sess["history"])
+        )
+    else:
+        # Продолжаем игру – кнопка становится зелёной
+        cur_win = int(sess["bet"] * JOKER_MULTIS[lvl])
+        await callback.message.edit_text(
+            f"{mention}, вы продолжаете игру Джокер!\n"
+            f"💰 Ставка: {format_balance(sess['bet'])}\n"
+            f"💵 Выигрыш: x{JOKER_MULTIS[lvl]} = {format_balance(cur_win)}",
+            reply_markup=get_joker_kb(session_id, finished=False)
+        )
+# ---------- Мины ----------
+mines_sessions = {}
+MINES_MULTIS = [1.25, 1.60, 2.15, 3.20, 5.30, 8.50, 10.50]
+
+@router.message(F.text.lower().startswith("мины"))
+async def game_mines(message: Message):
+    if not check_group_only(message, "мины"): return
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("❌ Использование: мины [ставка]")
+        return
+    bet = int(args[1])
+    if bet < MIN_BET: await message.answer(f"Минимальная ставка {MIN_BET} ₸"); return
+    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
+    if user["balance"] < bet: await message.answer("Недостаточно средств"); return
+    update_balance(user["user_id"], -bet)
+    session_id = f"{message.from_user.id}_{message.message_id}"
+    mines_sessions[session_id] = {"user_id":user["user_id"],"user_name":user["first_name"],"bet":bet,"opened":[],"mines":random.sample(range(25),5),"game_over":False}
+    mention = get_mention(user["user_id"], user["first_name"])
+    await message.answer(
+        get_mines_text(mention, bet, 1.0, bet),
+        reply_markup=get_mines_kb(session_id, [], False))
+
+def get_mines_text(mention, bet, multi, current_win):
+    return f"{mention}, вы начали игру Минное поле!\n💰 Ставка: {format_balance(bet)}\n💵 Выигрыш: x{multi} = {format_balance(current_win)}"
+
+def get_mines_kb(session_id, opened, game_over, mines=None):
+    buttons = []
+    for i in range(25):
+        if not game_over:
+            text = "ᅠ" if i in opened else "❓"
+            buttons.append(InlineKeyboardButton(text=text, callback_data=f"mn_{session_id}_{i}"))
+        else:
+            if i in mines: text = "💣"
+            elif i in opened: text = "ᅠ"
+            else: text = "❓"
+            buttons.append(InlineKeyboardButton(text=text, callback_data=f"mn_noop_{i}"))
+    kb = [buttons[r*5:(r+1)*5] for r in range(5)]
+    if not game_over:
+        kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"mn_cash_{session_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+@router.callback_query(F.data.startswith("mn_"))
+async def mines_callback(callback: CallbackQuery):
+    parts = callback.data.split("_"); action = parts[1]
+    if action == "noop": await callback.answer("Игра завершена."); return
+    if action == "cash":
+        session_id = f"{parts[2]}_{parts[3]}"
+        if session_id not in mines_sessions: await callback.answer("Игра не активна."); return
+        sess = mines_sessions[session_id]
+        if sess["user_id"] != callback.from_user.id: await callback.answer("Чужая игра!"); return
+        opened_cnt = len(sess["opened"]); multi = MINES_MULTIS[opened_cnt-1] if opened_cnt>0 else 1.0
+        win = int(sess["bet"] * multi); update_balance(sess["user_id"], win)
+        del mines_sessions[session_id]
+        mention = get_mention(sess["user_id"], sess["user_name"])
+        await callback.message.edit_text(f"{mention}, вы забрали выигрыш <b>{format_balance(win)}</b>!")
+        return
+    session_id = f"{parts[1]}_{parts[2]}"; cell = int(parts[3])
+    if session_id not in mines_sessions: await callback.answer("Игра завершена."); return
+    sess = mines_sessions[session_id]
+    if sess["user_id"] != callback.from_user.id: await callback.answer("Чужая игра!"); return
+    if cell in sess["opened"]: await callback.answer("Уже открыто!"); return
+    mention = get_mention(sess["user_id"], sess["user_name"])
+    if cell in sess["mines"]:
+        sess["game_over"] = True; del mines_sessions[session_id]
+        await callback.message.edit_text(f"{mention}, вы подорвались! Проиграно {format_balance(sess['bet'])}.",
+                                         reply_markup=get_mines_kb(session_id, sess["opened"], True, sess["mines"]))
+    else:
+        sess["opened"].append(cell)
+        opened_cnt = len(sess["opened"]); multi = MINES_MULTIS[opened_cnt-1]; current_win = int(sess["bet"] * multi)
+        if opened_cnt >= len(MINES_MULTIS):
+            win = int(sess["bet"] * MINES_MULTIS[-1]); update_balance(sess["user_id"], win)
+            del mines_sessions[session_id]
+            await callback.message.edit_text(f"{mention}, максимальный множитель! Выигрыш <b>{format_balance(win)}</b>",
+                                             reply_markup=get_mines_kb(session_id, sess["opened"], True, sess["mines"]))
+        else:
+            await callback.message.edit_text(
+                get_mines_text(mention, sess["bet"], multi, current_win),
+                reply_markup=get_mines_kb(session_id, sess["opened"], False))
+
+# ---------- Coinflip ----------
+coinflip_sessions = {}
+
+@router.message(F.text.lower().startswith("coinflip"))
+async def game_coinflip(message: Message):
+    if not check_group_only(message, "coinflip"): return
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("❌ Использование: coinflip [ставка]")
+        return
+    bet = int(args[1])
+    if bet < MIN_BET: await message.answer(f"Минимальная ставка {MIN_BET} ₸"); return
+    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
+    if user["balance"] < bet: await message.answer("Недостаточно средств"); return
+    update_balance(user["user_id"], -bet)
+    session_id = f"{message.from_user.id}_{message.message_id}"
+    coinflip_sessions[session_id] = {"user_id":user["user_id"],"bet":bet}
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🦅 Орёл", callback_data=f"cf_{session_id}_heads"),
+         InlineKeyboardButton(text="🪙 Решка", callback_data=f"cf_{session_id}_tails")]
+    ])
+    mention = get_mention(user["user_id"], user["first_name"])
+    await message.answer(f"🪙 {mention} подбрасывает монетку!\n💰 Ставка: <b>{format_balance(bet)}</b>\nВыберите сторону:", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("cf_"))
+async def coinflip_callback(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    session_id = f"{parts[1]}_{parts[2]}"
+    choice = parts[3]
+    if session_id not in coinflip_sessions: await callback.answer("Игра завершена."); return
+    sess = coinflip_sessions[session_id]
+    if callback.from_user.id != sess["user_id"]: await callback.answer("Чужая игра!"); return
+    del coinflip_sessions[session_id]
+    result = random.choice(["heads","tails"])
+    emoji = "🦅" if result == "heads" else "🪙"
+    if choice == result:
+        win = sess["bet"] * 2
+        update_balance(sess["user_id"], win)
+        with get_db() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE users SET games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = %s", (sess["user_id"],))
+                conn.commit()
+        await callback.message.edit_text(f"🪙 Выпало: {emoji}\n🎉 Вы выиграли <b>{format_balance(win)}</b>!")
+    else:
+        with get_db() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE users SET games_played = games_played + 1 WHERE user_id = %s", (sess["user_id"],))
+                conn.commit()
+        await callback.message.edit_text(f"🪙 Выпало: {emoji}\n❌ Вы проиграли <b>{format_balance(sess['bet'])}</b>.")
+    await callback.answer()
+
+# ---------- Дуэли ----------
+duels = {}
+
+@router.message(F.text.lower().startswith("дуэль"))
+async def game_duel(message: Message):
+    if not check_group_only(message, "дуэль"): return
+    if not message.reply_to_message: await message.answer("❌ Ответьте на сообщение соперника."); return
+    target = message.reply_to_message.from_user
+    if target.id == message.from_user.id or target.is_bot: return
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("❌ Использование: дуэль [ставка] в ответ на сообщение.")
+        return
+    bet = int(args[1])
+    if bet < MIN_BET: await message.answer(f"Минимальная ставка {MIN_BET} ₸"); return
+    p1_data = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
+    p2_data = get_user(target.id, target.first_name or "", target.last_name or "", target.username or "")
+    if p1_data["balance"] < bet or p2_data["balance"] < bet:
+        await message.answer("❌ У одного из участников недостаточно средств."); return
+    duel_id = f"{message.chat.id}_{message.message_id}"
+    duels[duel_id] = {"p1_id":p1_data["user_id"],"p1_name":p1_data["first_name"],"p1_choice":None,
+                      "p2_id":p2_data["user_id"],"p2_name":p2_data["first_name"],"p2_choice":None,
+                      "bet":bet,"chat_id":message.chat.id}
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚔️ Сражаться", callback_data=f"duel_acc_{duel_id}"),
+         InlineKeyboardButton(text="❌ Отказаться", callback_data=f"duel_den_{duel_id}")]])
+    p1_mention = get_mention(p1_data["user_id"], p1_data["first_name"])
+    p2_mention = get_mention(p2_data["user_id"], p2_data["first_name"])
+    msg = await message.answer(f"⚔️ {p1_mention} вызывает {p2_mention} на дуэль! Ставка: {format_balance(bet)}", reply_markup=kb)
+    asyncio.create_task(duel_accept_timeout(duel_id, msg))
+
+async def duel_accept_timeout(duel_id, msg: Message):
+    await asyncio.sleep(60)
+    if duel_id in duels:
+        if not duels[duel_id].get("accepted"):
+            del duels[duel_id]
+            try: await msg.edit_text("⏱ Время вышло! Ничья, ставки возвращены.")
+            except: pass
+
+@router.callback_query(F.data.startswith("duel_"))
+async def duel_init_callback(callback: CallbackQuery):
+    parts = callback.data.split("_"); action = parts[1]; duel_id = f"{parts[2]}_{parts[3]}"
+    if duel_id not in duels: await callback.answer("Дуэль устарела."); return
+    duel = duels[duel_id]; uid = callback.from_user.id
+    if action == "den":
+        if uid not in (duel["p1_id"], duel["p2_id"]): await callback.answer("Вы не участник!"); return
+        del duels[duel_id]; await callback.message.edit_text("❌ Дуэль отклонена.")
+        return
+    if action == "acc":
+        if uid != duel["p2_id"]: await callback.answer("Сражаться может только вызываемый!"); return
+        u1 = get_user(duel["p1_id"]); u2 = get_user(duel["p2_id"])
+        if u1["balance"] < duel["bet"] or u2["balance"] < duel["bet"]:
+            await callback.message.edit_text("❌ Недостаточно средств."); del duels[duel_id]; return
+        duel["accepted"] = True
+        update_balance(duel["p1_id"], -duel["bet"]); update_balance(duel["p2_id"], -duel["bet"])
+        p1_mention = get_mention(duel["p1_id"], duel["p1_name"]); p2_mention = get_mention(duel["p2_id"], duel["p2_name"])
+        kb1 = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🪨", callback_data=f"rps_{duel_id}_rock"),
+            InlineKeyboardButton(text="📄", callback_data=f"rps_{duel_id}_paper"),
+            InlineKeyboardButton(text="✂️", callback_data=f"rps_{duel_id}_scissors")]])
+        kb2 = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🪨", callback_data=f"rps_{duel_id}_rock"),
+            InlineKeyboardButton(text="📄", callback_data=f"rps_{duel_id}_paper"),
+            InlineKeyboardButton(text="✂️", callback_data=f"rps_{duel_id}_scissors")]])
+        try:
+            await bot.send_message(duel["p1_id"], f"⚔️ Дуэль против {p2_mention}! Ставка: {format_balance(duel['bet'])}.", reply_markup=kb1)
+            await bot.send_message(duel["p2_id"], f"⚔️ Дуэль против {p1_mention}! Ставка: {format_balance(duel['bet'])}.", reply_markup=kb2)
+            await callback.message.edit_text("⏳ Игроки делают выбор...")
+            asyncio.create_task(duel_choice_timeout(duel_id, callback.message))
+        except:
+            update_balance(duel["p1_id"], duel["bet"]); update_balance(duel["p2_id"], duel["bet"])
+            del duels[duel_id]
+            await callback.message.edit_text("❌ Дуэль отменена.")
+
+async def duel_choice_timeout(duel_id, msg: Message):
+    await asyncio.sleep(60)
+    if duel_id in duels:
+        d = duels[duel_id]; update_balance(d["p1_id"], d["bet"]); update_balance(d["p2_id"], d["bet"])
+        del duels[duel_id]
+        try: await bot.edit_message_text("⏱ Время вышло! Ничья.", chat_id=msg.chat.id, message_id=msg.message_id)
+        except: pass
+
+@router.callback_query(F.data.startswith("rps_"))
+async def rps_callback(callback: CallbackQuery):
+    parts = callback.data.split("_"); duel_id = f"{parts[1]}_{parts[2]}"; choice = parts[3]
+    if duel_id not in duels: await callback.answer("Дуэль устарела."); return
+    duel = duels[duel_id]; uid = callback.from_user.id
+    if uid == duel["p1_id"]: duel["p1_choice"] = choice
+    elif uid == duel["p2_id"]: duel["p2_choice"] = choice
+    else: return
+    await callback.message.edit_text("✅ Выбор сделан. Ожидаем соперника...")
+    if duel["p1_choice"] and duel["p2_choice"]:
+        c1, c2 = duel["p1_choice"], duel["p2_choice"]; bank = duel["bet"]*2
+        if c1 == c2:
+            update_balance(duel["p1_id"], duel["bet"]); update_balance(duel["p2_id"], duel["bet"])
+            res_text = "🤝 Ничья! Ставки возвращены."
+        else:
+            rules = {"rock":"scissors","scissors":"paper","paper":"rock"}
+            if rules[c1] == c2: win_id = duel["p1_id"]; winner_mention = get_mention(duel["p1_id"], duel["p1_name"])
+            else: win_id = duel["p2_id"]; winner_mention = get_mention(duel["p2_id"], duel["p2_name"])
+            update_balance(win_id, bank); res_text = f"🏆 Победитель: {winner_mention} забирает {format_balance(bank)}!"
+        try: await bot.send_message(duel["chat_id"], f"⚔️ <b>Результат дуэли</b>\n{res_text}")
+        except: pass
+        del duels[duel_id]
 REDS = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
 chat_roulette_bets = {}
 chat_last_bet_time = {}
@@ -879,14 +1245,16 @@ def parse_roulette_target(target_str: str):
     elif t in ["ч","black","черное"]: return "ч","BLACK"
     elif t in ["even","чет"]: return "even","EVEN"
     elif t in ["odd","нечет"]: return "odd","ODD"
-    # Официальные диапазоны казино
-    elif t in ["1-12","13-24","25-36","1-18","19-36"]:
-        return t, t
+    elif t in ["1-12","13-24","25-36"]: return t,t
+    elif "-" in t:
+        try:
+            s,e = map(int, t.split("-"))
+            if 0<=s<=36 and 0<=e<=36 and s<=e: return t,f"{s}-{e}"
+        except: pass
     elif t.isdigit():
         val = int(t)
-        if 0 <= val <= 36:
-            return str(val), str(val)
-    return None, None
+        if 0<=val<=36: return str(val),str(val)
+    return None,None
 
 def choice_emoji(choice):
     if choice in ["RED","к","red","красное"]: return "🔴"
@@ -895,27 +1263,6 @@ def choice_emoji(choice):
     elif choice in ["ODD","odd","нечет"]: return "🟠"
     elif choice == "0": return "🟢"
     else: return ""
-
-@router.message(F.text.lower().in_(["отмена", "отменить", "cancel", "/cancel"]))
-async def roulette_cancel_bets(message: Message):
-    if not check_group_only(message, "рулетка"): 
-        return
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-
-    if chat_id in chat_roulette_bets and chat_roulette_bets[chat_id]:
-        user_bets = [b for b in chat_roulette_bets[chat_id] if b["user_id"] == user_id]
-        if not user_bets:
-            await message.answer("❌ У вас нет активных ставок в этом чате.")
-            return
-
-        total_refund = sum(b["bet"] for b in user_bets)
-        chat_roulette_bets[chat_id] = [b for b in chat_roulette_bets[chat_id] if b["user_id"] != user_id]
-        update_balance(user_id, total_refund)
-        mention = get_mention(user_id, message.from_user.first_name or "")
-        await message.answer(f"✅ Ставки игрока {mention} отменены. На баланс возвращено: {format_balance(total_refund)}")
-    else:
-        await message.answer("❌ В этом чате нет активных ставок.")
 
 @router.message(F.text.lower() == "ставки")
 async def roulette_bets_list(message: Message):
@@ -954,7 +1301,10 @@ async def roulette_go(message: Message):
     chat_roulette_bets[chat_id] = []
     valid_bets = []
     for b in bets_to_play:
-        valid_bets.append(b)
+        u = get_user(b["user_id"])
+        if u["balance"] >= b["bet"]:
+            update_balance(b["user_id"], -b["bet"])
+            valid_bets.append(b)
     if not valid_bets: return
     try:
         animation_file = get_cached_animation()
@@ -973,7 +1323,6 @@ async def roulette_go(message: Message):
         emoji = choice_emoji(b["choice_display"])
         res_lines.append(f"{mention} {b['bet']} ₸ на {emoji} {b['choice_display']}")
     res_lines.append("")
-    player_stats = {}
     for b in valid_bets:
         choice = b["choice"]; bet = b["bet"]
         is_win = False; multi = 0
@@ -983,36 +1332,25 @@ async def roulette_go(message: Message):
         elif choice in ["odd","нечет"]: is_win = (roll!=0 and roll%2!=0); multi = 2
         elif choice in ["1-12","13-24","25-36"]:
             s,e = map(int, choice.split("-")); is_win = (s<=roll<=e); multi = 3
-        elif choice in ["1-18","19-36"]:
-            s,e = map(int, choice.split("-")); is_win = (s<=roll<=e); multi = 2
-        else:
-            is_win = (roll==int(choice)); multi = 36
+        elif "-" in choice:
+            s,e = map(int, choice.split("-")); is_win = (s<=roll<=e)
+            n = e-s+1; multi = max(2, int(36/n))
+        else: is_win = (roll==int(choice)); multi = 36
         mention = get_mention(b["user_id"], b["user_name"])
         if is_win:
             win_amount = bet * multi
             update_balance(b["user_id"], win_amount)
+            with get_db() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE users SET games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = %s", (b["user_id"],))
+                    conn.commit()
             res_lines.append(f"{mention} ставка {bet} ₸ выиграл {format_balance(win_amount)} на {b['choice_display']}")
-            if b["user_id"] not in player_stats:
-                player_stats[b["user_id"]] = {"played": 1, "won": 0, "total_bet": bet, "total_win": win_amount}
-            else:
-                player_stats[b["user_id"]]["total_bet"] += bet
-                player_stats[b["user_id"]]["total_win"] += win_amount
         else:
+            with get_db() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("UPDATE users SET games_played = games_played + 1 WHERE user_id = %s", (b["user_id"],))
+                    conn.commit()
             res_lines.append(f"{mention} ставка {bet} ₸ проиграл")
-            if b["user_id"] not in player_stats:
-                player_stats[b["user_id"]] = {"played": 1, "won": 0, "total_bet": bet, "total_win": 0}
-            else:
-                player_stats[b["user_id"]]["total_bet"] += bet
-
-    for uid, stats in player_stats.items():
-        with get_db() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE users SET games_played = games_played + %s, games_won = games_won + %s WHERE user_id = %s",
-                    (stats["played"], 1 if stats["total_win"] > stats["total_bet"] else 0, uid)
-                )
-                conn.commit()
-
     keyboard_rows = []
     unique_users_in_bets = {}
     for b in valid_bets:
@@ -1036,20 +1374,20 @@ async def roulette_action_callback(callback: CallbackQuery):
     multiplier = 2 if action=="dbl" else 1
     total_cost = sum(b["bet"]*multiplier for b in last_bets)
     if user["balance"] < total_cost: await callback.answer(f"❌ Недостаточно средств! Требуется {format_balance(total_cost)}", show_alert=True); return
-    # Списываем сразу
-    update_balance(user_id, -total_cost)
     chat_id = callback.message.chat.id
     if chat_id not in chat_roulette_bets: chat_roulette_bets[chat_id] = []
-    updated_last_bets = []
+    updated_last_bets = []; displays = []
     for b in last_bets:
         new_bet_amt = b["bet"] * multiplier
         chat_roulette_bets[chat_id].append({"user_id":user_id,"user_name":user["first_name"],"bet":new_bet_amt,"choice":b["choice"],"choice_display":b["choice_display"]})
         updated_last_bets.append({"bet":new_bet_amt,"choice":b["choice"],"choice_display":b["choice_display"]})
+        emoji = choice_emoji(b["choice_display"])
+        displays.append(f"{new_bet_amt} ₸ на {emoji} {b['choice_display']}")
     chat_last_bet_time[(chat_id,user_id)] = datetime.now()
     save_last_bets(user_id, updated_last_bets)
     await callback.answer("✅ Ставка сделана!")
     mention = get_mention(user_id, user["first_name"])
-    await callback.message.answer(f"✅ Ставка принята: {mention}\n💰 Всего: {format_balance(total_cost)} | Ставок: {len(updated_last_bets)}")
+    await callback.message.answer(f"Ставка принята: {mention} всего {format_balance(total_cost)} ({', '.join(displays)})")
 
 # ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
 @router.message(F.text)
@@ -1065,16 +1403,11 @@ async def generic_message_handler(message: Message):
     if not targets:
         return
 
-    if len(targets) > 5:
-        await message.answer("❌ Максимум 5 объектов в одной ставке, чтобы бот не зависал.")
-        return
-
     valid_targets = []
     for tgt in targets:
         code, display = parse_roulette_target(tgt)
-        if code is None:
-            return  # если есть постороннее слово — это не ставка
-        valid_targets.append((code, display))
+        if code is not None:
+            valid_targets.append((code, display))
 
     if not valid_targets:
         return
@@ -1093,14 +1426,13 @@ async def generic_message_handler(message: Message):
         await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
         return
 
-    # Списываем сразу
-    update_balance(user["user_id"], -total_bet)
-
     chat_id = message.chat.id
     if chat_id not in chat_roulette_bets:
         chat_roulette_bets[chat_id] = []
 
     new_user_bets = []
+    displays = []
+
     for code, display in valid_targets:
         chat_roulette_bets[chat_id].append({
             "user_id": user["user_id"],
@@ -1114,15 +1446,15 @@ async def generic_message_handler(message: Message):
             "choice": code,
             "choice_display": display
         })
+        emoji = choice_emoji(display)
+        displays.append(f"{bet_per_item} ₸ на {emoji} {display}")
 
     chat_last_bet_time[(chat_id, user["user_id"])] = datetime.now()
     save_last_bets(user["user_id"], new_user_bets)
 
     mention = get_mention(user["user_id"], user["first_name"])
-    await message.answer(
-        f"✅ Ставка принята: {mention}\n"
-        f"💰 Всего: {format_balance(total_bet)} | Ставок: {len(valid_targets)}"
-    )
+    displays_str = ", ".join(displays)
+    await message.answer(f"Ставка принята: {mention} всего {format_balance(total_bet)} ({displays_str})")
 
 # ---------- Джокер ----------
 joker_sessions = {}
@@ -1160,11 +1492,7 @@ def get_joker_kb(session_id, finished=False):
             InlineKeyboardButton(text="🎴", callback_data=f"jk_{session_id}_2")
         ]
         kb.append(row)
-        if sess and sess["level"] > 0:
-            btn_text = "🟢 💰 Забрать выигрыш"
-        else:
-            btn_text = "💰 Забрать выигрыш"
-        kb.append([InlineKeyboardButton(text=btn_text, callback_data=f"jk_cash_{session_id}")])
+        kb.append([InlineKeyboardButton(text="💰 Забрать выигрыш", callback_data=f"jk_cash_{session_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 @router.callback_query(F.data.startswith("jk_"))
@@ -1388,12 +1716,7 @@ async def duel_accept_timeout(duel_id, msg: Message):
 
 @router.callback_query(F.data.startswith("duel_"))
 async def duel_init_callback(callback: CallbackQuery):
-    try:
-        # Используем rsplit, чтобы корректно обработать отрицательный ID чата
-        _, action, duel_id = callback.data.split("_", 2)
-    except ValueError:
-        await callback.answer("❌ Ошибка обработки данных дуэли.", show_alert=True)
-        return
+    parts = callback.data.split("_"); action = parts[1]; duel_id = f"{parts[2]}_{parts[3]}"
     if duel_id not in duels: await callback.answer("Дуэль устарела."); return
     duel = duels[duel_id]; uid = callback.from_user.id
     if action == "den":
@@ -1436,11 +1759,7 @@ async def duel_choice_timeout(duel_id, msg: Message):
 
 @router.callback_query(F.data.startswith("rps_"))
 async def rps_callback(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    if len(parts) != 4:
-        return
-    _, chat_id_part, message_id_part, choice = parts
-    duel_id = f"{chat_id_part}_{message_id_part}"
+    parts = callback.data.split("_"); duel_id = f"{parts[1]}_{parts[2]}"; choice = parts[3]
     if duel_id not in duels: await callback.answer("Дуэль устарела."); return
     duel = duels[duel_id]; uid = callback.from_user.id
     if uid == duel["p1_id"]: duel["p1_choice"] = choice
@@ -1651,47 +1970,11 @@ async def secret_globalbonus(message: Message):
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit(): return
     amt = int(args[1])
-    hours = int(get_setting("bonus_cooldown", "8"))
-    threshold = datetime.now() - timedelta(hours=hours)
     with get_db() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                "UPDATE users SET balance = balance + %s WHERE last_bonus IS NOT NULL AND last_bonus > %s",
-                (amt, threshold.isoformat())
-            )
+            cursor.execute("UPDATE users SET balance = balance + %s WHERE last_bonus > %s", (amt, (datetime.now() - timedelta(hours=24)).isoformat()))
             conn.commit()
     await message.answer(f"✅ Глобальный бонус <b>{format_balance(amt)}</b> выдан активным игрокам.")
-
-@router.message(Command("setallbal"))
-async def secret_setallbal(message: Message):
-    if not has_secret_power(message.from_user.id, "setallbal"): return
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit(): return
-    amt = int(args[1])
-    with get_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("UPDATE users SET balance = %s", (amt,))
-            conn.commit()
-    log_admin_action(message.from_user.id, f"setallbal {amt}")
-    await message.answer(f"✅ Всем установлен баланс {format_balance(amt)}")
-
-@router.message(Command("resetallbal"))
-async def secret_resetallbal(message: Message):
-    if not has_secret_power(message.from_user.id, "resetallbal"): return
-    with get_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("UPDATE users SET balance = 4000")
-            conn.commit()
-    await message.answer("✅ Все балансы сброшены до 4000 ₸")
-
-@router.message(Command("clearlog"))
-async def secret_clearlog(message: Message):
-    if not has_secret_power(message.from_user.id, "clearlog"): return
-    with get_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("DELETE FROM admin_log")
-            conn.commit()
-    await message.answer("✅ Лог администраторов очищен")
 
 @router.message(Command("wipe"))
 async def secret_wipe(message: Message):
@@ -1748,7 +2031,7 @@ async def secret_sql(message: Message):
                 cursor.execute(query)
                 if cursor.description: rows = cursor.fetchall()[:10]; text = "\n".join(str(r) for r in rows)
                 else: conn.commit(); text = "Запрос выполнен."
-        await message.answer(f"<code>{html.escape(text)}</code>")
+        await message.answer(f"<code>{text}</code>")
     except Exception as e: await message.answer(f"❌ {e}")
 
 @router.message(Command("emergency_stop"))
@@ -1842,7 +2125,7 @@ async def main():
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
     await web_server()
-    logging.info("Бот Kaspi Red запущен!")
+    logging.info("Бот CreditMania запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
