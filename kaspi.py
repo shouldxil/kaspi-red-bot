@@ -648,7 +648,7 @@ async def cmd_transfer(message: Message):
     await message.answer(msg)
 
 # ---------- Админ-команды (обычные) ----------
-# Здесь важно: финансовые команды доступны только администраторам и выше, а не модераторам.
+# Финансовые команды доступны только администраторам и выше, не модераторам.
 @router.message(Command("addpromo"))
 async def admin_addpromo(message: Message):
     if not is_admin_or_above(message.from_user.id): return
@@ -884,7 +884,7 @@ def parse_roulette_target(target_str: str):
             s,e = map(int, t.split("-"))
             if 0 <= s <= 36 and 0 <= e <= 36 and s <= e:
                 n = e - s + 1
-                if n <= 18:  # Запрещены широкие диапазоны
+                if n <= 18:  # максимум половина колеса
                     return t, f"{s}-{e}"
         except:
             pass
@@ -961,6 +961,9 @@ async def roulette_go(message: Message):
         emoji = choice_emoji(b["choice_display"])
         res_lines.append(f"{mention} {b['bet']} ₸ на {emoji} {b['choice_display']}")
     res_lines.append("")
+    # Статистика: для каждого игрока увеличиваем games_played один раз за раунд
+    # и games_won если суммарный выигрыш > суммарной ставки
+    player_stats = {}
     for b in valid_bets:
         choice = b["choice"]; bet = b["bet"]
         is_win = False; multi = 0
@@ -978,17 +981,30 @@ async def roulette_go(message: Message):
         if is_win:
             win_amount = bet * multi
             update_balance(b["user_id"], win_amount)
-            with get_db() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("UPDATE users SET games_played = games_played + 1, games_won = games_won + 1 WHERE user_id = %s", (b["user_id"],))
-                    conn.commit()
             res_lines.append(f"{mention} ставка {bet} ₸ выиграл {format_balance(win_amount)} на {b['choice_display']}")
+            # добавляем в статистику
+            if b["user_id"] not in player_stats:
+                player_stats[b["user_id"]] = {"played": 1, "won": 0, "total_bet": bet, "total_win": win_amount}
+            else:
+                player_stats[b["user_id"]]["total_bet"] += bet
+                player_stats[b["user_id"]]["total_win"] += win_amount
         else:
-            with get_db() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("UPDATE users SET games_played = games_played + 1 WHERE user_id = %s", (b["user_id"],))
-                    conn.commit()
             res_lines.append(f"{mention} ставка {bet} ₸ проиграл")
+            if b["user_id"] not in player_stats:
+                player_stats[b["user_id"]] = {"played": 1, "won": 0, "total_bet": bet, "total_win": 0}
+            else:
+                player_stats[b["user_id"]]["total_bet"] += bet
+
+    # Обновляем статистику после раунда
+    for uid, stats in player_stats.items():
+        with get_db() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE users SET games_played = games_played + %s, games_won = games_won + %s WHERE user_id = %s",
+                    (stats["played"], 1 if stats["total_win"] > stats["total_bet"] else 0, uid)
+                )
+                conn.commit()
+
     keyboard_rows = []
     unique_users_in_bets = {}
     for b in valid_bets:
