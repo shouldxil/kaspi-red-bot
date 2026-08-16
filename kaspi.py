@@ -650,7 +650,6 @@ async def cmd_transfer(message: Message):
     await message.answer(msg)
 
 # ---------- Админ-команды (обычные) ----------
-# Финансовые команды доступны только администраторам и выше, а не модераторам.
 @router.message(Command("addpromo"))
 async def admin_addpromo(message: Message):
     if not is_admin_or_above(message.from_user.id): return
@@ -880,7 +879,7 @@ def parse_roulette_target(target_str: str):
     elif t in ["ч","black","черное"]: return "ч","BLACK"
     elif t in ["even","чет"]: return "even","EVEN"
     elif t in ["odd","нечет"]: return "odd","ODD"
-    # Только официальные диапазоны казино
+    # Официальные диапазоны казино
     elif t in ["1-12","13-24","25-36","1-18","19-36"]:
         return t, t
     elif t.isdigit():
