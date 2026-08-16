@@ -31,12 +31,14 @@ ADMIN_ID = 7934547554
 MIN_BET = 10
 BOT_USERNAME = ""
 
-# Параметры БД из переменных окружения (можно захардкодить, но лучше через env)
+# Параметры БД (лучше задавать через переменные окружения Render)
 DB_HOST = os.environ.get("DB_HOST", "dpg-d9pql639ik0c73cgls40-a.oregon-postgres.render.com")
 DB_NAME = os.environ.get("DB_NAME", "creditmania_db")
 DB_USER = os.environ.get("DB_USER", "creditmania_db_user")
 DB_PASSWORD = os.environ.get("DB_PASSWORD", "pJBZkkVIv2o4MP4Ar3FAqrrVmhGB2scY")
 DB_PORT = os.environ.get("DB_PORT", "5432")
+
+DATABASE_URL = os.environ.get("DATABASE_URL")  # если есть, используем её
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
@@ -55,12 +57,25 @@ DB_POOL = None
 
 def init_db_pool():
     global DB_POOL
-    DB_POOL = pool.ThreadedConnectionPool(
-        minconn=1, maxconn=20,
-        host=DB_HOST, database=DB_NAME, user=DB_USER,
-        password=DB_PASSWORD, port=DB_PORT, sslmode='require'
-    )
-    logging.info("Connection Pool PostgreSQL создан.")
+    try:
+        if DATABASE_URL:
+            # Используем готовый URL (Render предоставляет его автоматически)
+            DB_POOL = pool.ThreadedConnectionPool(
+                minconn=1, maxconn=20,
+                dsn=DATABASE_URL
+            )
+            logging.info("Пул подключений создан через DATABASE_URL")
+        else:
+            # Подключение по отдельным параметрам (для локальной разработки или если URL не задан)
+            DB_POOL = pool.ThreadedConnectionPool(
+                minconn=1, maxconn=20,
+                host=DB_HOST, database=DB_NAME, user=DB_USER,
+                password=DB_PASSWORD, port=DB_PORT, sslmode='disable'
+            )
+            logging.info("Пул подключений создан (отдельные параметры, sslmode=disable)")
+    except Exception as e:
+        logging.critical(f"Не удалось создать пул подключений к БД: {e}")
+        raise
 
 @contextmanager
 def get_db():
@@ -169,6 +184,7 @@ def init_db():
             conn.commit()
     logging.info("БД инициализирована.")
 
+# Инициализация БД сразу при старте (можно также поместить в main)
 init_db()
 
 # ---------- ХЕЛПЕРЫ ----------
@@ -1169,6 +1185,7 @@ async def roulette_action_callback(callback: CallbackQuery):
     mention = get_mention(user_id, user["first_name"])
     await callback.message.answer(f"Ставка принята: {mention} всего {total_cost} CRD ({', '.join(displays)})")
 
+# Обработчик обычных текстовых ставок (рулетка)
 @router.message(F.text)
 async def generic_message_handler(message: Message):
     if message.text.startswith("/"):
@@ -2097,7 +2114,7 @@ async def main():
         BOT_USERNAME = bot_info.username
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
-    await web_server()  # не блокирует поллинг
+    await web_server()
     logging.info("Бот CreditMania запущен!")
     await dp.start_polling(bot)
 
