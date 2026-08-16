@@ -1573,4 +1573,4 @@ async def secret_lottery(message: Message):
     if row:
         update_balance(row[0], prize); u = get_user(row[0])
         await message.answer(f"🎉 Лотерея! {get_mention(row[0], u['first_name'])} выиграл {format_balance(prize)}!")
-```[cite: 3]
+   [cite: 3]
