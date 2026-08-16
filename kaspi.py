@@ -462,6 +462,7 @@ async def cmd_help(message: Message):
         "• [ставка] [объекты...] — Рулетка\n"
         "• лог — История рулетки\n"
         "• ставки — Текущие ставки\n"
+        "• отмена — отменить свои ставки в рулетке\n"
         "• джокер [ставка] — Джокер\n"
         "• мины [ставка] — Минное поле\n"
         "• дуэль [ставка] — Дуэль (ответом на сообщение)\n"
@@ -648,7 +649,6 @@ async def cmd_transfer(message: Message):
     await message.answer(msg)
 
 # ---------- Админ-команды (обычные) ----------
-# Финансовые команды доступны только администраторам и выше, а не модераторам.
 @router.message(Command("addpromo"))
 async def admin_addpromo(message: Message):
     if not is_admin_or_above(message.from_user.id): return
@@ -676,7 +676,7 @@ async def admin_delpromo(message: Message):
 
 @router.message(Command("setbal"))
 async def admin_setbal(message: Message):
-    if not is_admin_or_above(message.from_user.id): return  # модераторам нельзя
+    if not is_admin_or_above(message.from_user.id): return
     args = message.text.split()
     if len(args) < 3 or not args[2].isdigit():
         await message.answer("Использование: /setbal @username [сумма]"); return
@@ -692,7 +692,7 @@ async def admin_setbal(message: Message):
 
 @router.message(Command("info"))
 async def admin_info(message: Message):
-    if not is_moder_or_above(message.from_user.id): return  # модераторам можно смотреть
+    if not is_moder_or_above(message.from_user.id): return
     args = message.text.split()
     if len(args) < 2: await message.answer("Использование: /info @username"); return
     target = find_user_by_identifier(args[1])
@@ -878,7 +878,6 @@ def parse_roulette_target(target_str: str):
     elif t in ["ч","black","черное"]: return "ч","BLACK"
     elif t in ["even","чет"]: return "even","EVEN"
     elif t in ["odd","нечет"]: return "odd","ODD"
-    # Только официальные ставки казино
     elif t in ["1-12","13-24","25-36","1-18","19-36"]:
         return t, t
     elif t.isdigit():
@@ -894,6 +893,27 @@ def choice_emoji(choice):
     elif choice in ["ODD","odd","нечет"]: return "🟠"
     elif choice == "0": return "🟢"
     else: return ""
+
+@router.message(F.text.lower().in_(["отмена", "отменить", "cancel", "/cancel"]))
+async def roulette_cancel_bets(message: Message):
+    if not check_group_only(message, "рулетка"): 
+        return
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    if chat_id in chat_roulette_bets and chat_roulette_bets[chat_id]:
+        user_bets = [b for b in chat_roulette_bets[chat_id] if b["user_id"] == user_id]
+        if not user_bets:
+            await message.answer("❌ У вас нет активных ставок в этом чате.")
+            return
+
+        total_refund = sum(b["bet"] for b in user_bets)
+        chat_roulette_bets[chat_id] = [b for b in chat_roulette_bets[chat_id] if b["user_id"] != user_id]
+        update_balance(user_id, total_refund)
+        mention = get_mention(user_id, message.from_user.first_name or "")
+        await message.answer(f"✅ Ставки игрока {mention} отменены. На баланс возвращено: {format_balance(total_refund)}")
+    else:
+        await message.answer("❌ В этом чате нет активных ставок.")
 
 @router.message(F.text.lower() == "ставки")
 async def roulette_bets_list(message: Message):
@@ -932,10 +952,8 @@ async def roulette_go(message: Message):
     chat_roulette_bets[chat_id] = []
     valid_bets = []
     for b in bets_to_play:
-        u = get_user(b["user_id"])
-        if u["balance"] >= b["bet"]:
-            update_balance(b["user_id"], -b["bet"])
-            valid_bets.append(b)
+        # средства уже списаны при приёме, просто добавляем ставку
+        valid_bets.append(b)
     if not valid_bets: return
     try:
         animation_file = get_cached_animation()
@@ -1017,15 +1035,15 @@ async def roulette_action_callback(callback: CallbackQuery):
     multiplier = 2 if action=="dbl" else 1
     total_cost = sum(b["bet"]*multiplier for b in last_bets)
     if user["balance"] < total_cost: await callback.answer(f"❌ Недостаточно средств! Требуется {format_balance(total_cost)}", show_alert=True); return
+    # Списываем сразу
+    update_balance(user_id, -total_cost)
     chat_id = callback.message.chat.id
     if chat_id not in chat_roulette_bets: chat_roulette_bets[chat_id] = []
-    updated_last_bets = []; displays = []
+    updated_last_bets = []
     for b in last_bets:
         new_bet_amt = b["bet"] * multiplier
         chat_roulette_bets[chat_id].append({"user_id":user_id,"user_name":user["first_name"],"bet":new_bet_amt,"choice":b["choice"],"choice_display":b["choice_display"]})
         updated_last_bets.append({"bet":new_bet_amt,"choice":b["choice"],"choice_display":b["choice_display"]})
-        emoji = choice_emoji(b["choice_display"])
-        displays.append(f"{new_bet_amt} ₸ на {emoji} {b['choice_display']}")
     chat_last_bet_time[(chat_id,user_id)] = datetime.now()
     save_last_bets(user_id, updated_last_bets)
     await callback.answer("✅ Ставка сделана!")
@@ -1073,12 +1091,14 @@ async def generic_message_handler(message: Message):
         await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
         return
 
+    # Списываем сразу
+    update_balance(user["user_id"], -total_bet)
+
     chat_id = message.chat.id
     if chat_id not in chat_roulette_bets:
         chat_roulette_bets[chat_id] = []
 
     new_user_bets = []
-
     for code, display in valid_targets:
         chat_roulette_bets[chat_id].append({
             "user_id": user["user_id"],
@@ -1366,7 +1386,12 @@ async def duel_accept_timeout(duel_id, msg: Message):
 
 @router.callback_query(F.data.startswith("duel_"))
 async def duel_init_callback(callback: CallbackQuery):
-    parts = callback.data.split("_"); action = parts[1]; duel_id = f"{parts[2]}_{parts[3]}"
+    try:
+        # Используем rsplit, чтобы корректно обработать отрицательный ID чата
+        _, action, duel_id = callback.data.split("_", 2)
+    except ValueError:
+        await callback.answer("❌ Ошибка обработки данных дуэли.", show_alert=True)
+        return
     if duel_id not in duels: await callback.answer("Дуэль устарела."); return
     duel = duels[duel_id]; uid = callback.from_user.id
     if action == "den":
@@ -1409,7 +1434,12 @@ async def duel_choice_timeout(duel_id, msg: Message):
 
 @router.callback_query(F.data.startswith("rps_"))
 async def rps_callback(callback: CallbackQuery):
-    parts = callback.data.split("_"); duel_id = f"{parts[1]}_{parts[2]}"; choice = parts[3]
+    parts = callback.data.split("_")
+    if len(parts) != 4:
+        return
+    _, _, duel_id_part1, duel_id_part2 = parts
+    duel_id = f"{duel_id_part1}_{duel_id_part2}"
+    choice = parts[4] if len(parts) > 4 else None
     if duel_id not in duels: await callback.answer("Дуэль устарела."); return
     duel = duels[duel_id]; uid = callback.from_user.id
     if uid == duel["p1_id"]: duel["p1_choice"] = choice
