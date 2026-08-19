@@ -608,13 +608,8 @@ async def cmd_top(message: Message):
         user_id, username, balance = row
         display_name = f"Пользователь - {i}"
 
-        if username:
-            # если у пользователя есть username, используем его для ссылки
-            link = f"https://t.me/{username}"
-        else:
-            # иначе ссылаемся на ID (тоже работает)
-            link = f"tg://user?id={user_id}"
-
+        # Всегда используем tg://user?id для ссылки (одинаково для всех)
+        link = f"tg://user?id={user_id}"
         mention = f'<a href="{link}">{display_name}</a>'
         medal = medals.get(i, "")
         text += f"{medal} {i}. {mention} — <b>{format_balance(balance)}</b>\n"
@@ -2360,7 +2355,7 @@ async def owner_set_admin_rank(message: Message):
             )
             conn.commit()
     await message.answer(f"✅ {get_mention(target['user_id'], target['first_name'])} назначен {get_rank_emoji(rank)}.")
-    
+
 # ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
 @router.message(F.text)
 async def generic_message_handler(message: Message):
