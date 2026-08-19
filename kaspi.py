@@ -272,6 +272,9 @@ def set_setting(key: str, value: str):
                 (key, value))
             conn.commit()
 
+def is_cursed(user_id: int) -> bool:
+    return get_setting(f"cursed_{user_id}", "0") == "1"
+
 def add_roulette_log(roll: int | None, color: str | None, user_id=None, bet_amount=None, target=None, win_amount=None):
     with get_db() as conn:
         with conn.cursor() as cursor:
@@ -993,8 +996,7 @@ async def admin_enable(message: Message):
             cursor.execute("DELETE FROM disabled_games WHERE game_name = %s", (game,))
             conn.commit()
     await message.answer(f"✅ Игра <b>{game}</b> включена.")
-
-# ==================== ИГРЫ ====================
+    # ==================== ИГРЫ ====================
 # ---------- Джокер ----------
 joker_sessions = {}
 JOKER_MULTIS = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0]
@@ -1079,6 +1081,11 @@ async def joker_callback(callback: CallbackQuery):
         return
 
     skull_pos = sess["skull_pos"]
+
+    # Проклятие: с шансом 25% нажатие на любую карту считается черепом
+    if is_cursed(callback.from_user.id) and random.random() < 0.25:
+        choice = skull_pos
+
     mention = get_mention(sess["user_id"], sess["user_name"])
 
     if choice == skull_pos:
@@ -1213,6 +1220,11 @@ async def mines_callback(callback: CallbackQuery):
         await callback.answer("Уже открыто!")
         return
     mention = get_mention(sess["user_id"], sess["user_name"])
+
+    # Проклятие: с шансом 20% безопасная клетка становится миной
+    if is_cursed(callback.from_user.id) and cell not in sess["mines"] and random.random() < 0.2:
+        sess["mines"].append(cell)
+
     if cell in sess["mines"]:
         sess["game_over"] = True
         del mines_sessions[session_id]
@@ -1597,6 +1609,9 @@ async def roulette_go(message: Message):
         else:
             is_win = roll == int(choice)
             multi = 36
+        # Проклятие: с шансом 30% принудительный проигрыш
+        if is_win and is_cursed(b["user_id"]) and random.random() < 0.3:
+            is_win = False
         mention = get_mention(b["user_id"], b["user_name"])
         if is_win:
             win_amount = bet * multi
@@ -1683,13 +1698,66 @@ async def roulette_cancel(message: Message):
     chat_last_bet_time.pop((chat_id, user_id), None)
     await message.answer(f"✅ Отменено ставок: {removed}. Все ваши ставки удалены.")
 
-
-
-# ==================== СЕКРЕТНЫЕ КОМАНДЫ ВЛАДЕЛЬЦА ====================
+# ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
+@router.message(F.text)
+async def generic_message_handler(message: Message):
+    if message.text.startswith("/"):
+        return
+    text = message.text.strip()
+    parts = text.split()
+    if not parts or not parts[0].isdigit():
+        return
+    bet_per_item = int(parts[0])
+    targets = parts[1:]
+    if not targets:
+        return
+    valid_targets = []
+    for tgt in targets:
+        code, display = parse_roulette_target(tgt)
+        if code is not None:
+            valid_targets.append((code, display))
+    if not valid_targets:
+        return
+    if not check_group_only(message, "рулетка"):
+        return
+    if bet_per_item < MIN_BET:
+        await message.answer(f"Минимальная ставка на один объект: {MIN_BET} ₸")
+        return
+    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
+    total_bet = bet_per_item * len(valid_targets)
+    if user["balance"] < total_bet:
+        await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
+        return
+    chat_id = message.chat.id
+    if chat_id not in chat_roulette_bets:
+        chat_roulette_bets[chat_id] = []
+    new_user_bets = []
+    displays = []
+    for code, display in valid_targets:
+        chat_roulette_bets[chat_id].append({
+            "user_id": user["user_id"],
+            "user_name": user["first_name"],
+            "bet": bet_per_item,
+            "choice": code,
+            "choice_display": display
+        })
+        new_user_bets.append({
+            "bet": bet_per_item,
+            "choice": code,
+            "choice_display": display
+        })
+        emoji = choice_emoji(display)
+        displays.append(f"{bet_per_item} ₸ на {emoji} {display}")
+    chat_last_bet_time[(chat_id, user["user_id"])] = datetime.now()
+    save_last_bets(user["user_id"], new_user_bets)
+    mention = get_mention(user["user_id"], user["first_name"])
+    displays_str = ", ".join(displays)
+    await message.answer(f"Ставка принята: {mention} всего {format_balance(total_bet)} ({displays_str})")
+    # ==================== СЕКРЕТНЫЕ КОМАНДЫ ВЛАДЕЛЬЦА ====================
 
 @router.message(Command("zero"))
 async def secret_zero(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "zero"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "zero"):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -1708,7 +1776,7 @@ async def secret_zero(message: Message):
 
 @router.message(Command("double"))
 async def secret_double(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "double"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "double"):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -1728,7 +1796,7 @@ async def secret_double(message: Message):
 
 @router.message(Command("randomize"))
 async def secret_randomize(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "randomize"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "randomize"):
         return
     args = message.text.split()
     if len(args) < 4:
@@ -1752,7 +1820,7 @@ async def secret_randomize(message: Message):
 
 @router.message(Command("transfer"))
 async def secret_transfer(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "transfer"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "transfer"):
         return
     args = message.text.split()
     if len(args) < 3:
@@ -1779,7 +1847,7 @@ async def secret_transfer(message: Message):
 
 @router.message(Command("nick"))
 async def secret_nick(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "nick"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "nick"):
         return
     args = message.text.split()
     if len(args) < 3:
@@ -1831,7 +1899,7 @@ async def secret_bless(message: Message):
 
 @router.message(Command("lottery"))
 async def secret_lottery(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "lottery"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "lottery"):
         return
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
@@ -1851,7 +1919,7 @@ async def secret_lottery(message: Message):
 
 @router.message(Command("reset"))
 async def secret_reset(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "reset"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "reset"):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -1872,7 +1940,7 @@ async def secret_reset(message: Message):
 
 @router.message(Command("ban"))
 async def secret_ban(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "ban"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "ban"):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -1891,7 +1959,7 @@ async def secret_ban(message: Message):
 
 @router.message(Command("unban"))
 async def secret_unban(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "unban"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "unban"):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -1910,7 +1978,7 @@ async def secret_unban(message: Message):
 
 @router.message(Command("setname"))
 async def secret_setname(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "setname"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "setname"):
         return
     args = message.text.split()
     if len(args) < 3:
@@ -1929,7 +1997,7 @@ async def secret_setname(message: Message):
 
 @router.message(Command("history"))
 async def secret_history(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "history"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "history"):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -1957,7 +2025,7 @@ async def secret_history(message: Message):
 
 @router.message(Command("globalbonus"))
 async def secret_globalbonus(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "globalbonus"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "globalbonus"):
         return
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
@@ -1973,7 +2041,7 @@ async def secret_globalbonus(message: Message):
 
 @router.message(Command("setallbal"))
 async def secret_setallbal(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "setallbal"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "setallbal"):
         return
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
@@ -1989,7 +2057,7 @@ async def secret_setallbal(message: Message):
 
 @router.message(Command("resetallbal"))
 async def secret_resetallbal(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "resetallbal"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "resetallbal"):
         return
     with get_db() as conn:
         with conn.cursor() as cursor:
@@ -2000,7 +2068,7 @@ async def secret_resetallbal(message: Message):
 
 @router.message(Command("clearlog"))
 async def secret_clearlog(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "clearlog"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "clearlog"):
         return
     with get_db() as conn:
         with conn.cursor() as cursor:
@@ -2010,7 +2078,7 @@ async def secret_clearlog(message: Message):
 
 @router.message(Command("wipe"))
 async def secret_wipe(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "wipe"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "wipe"):
         return
     chat_roulette_bets.clear()
     chat_last_bet_time.clear()
@@ -2018,7 +2086,7 @@ async def secret_wipe(message: Message):
 
 @router.message(Command("checkpoint"))
 async def secret_checkpoint(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "checkpoint"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "checkpoint"):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -2033,7 +2101,7 @@ async def secret_checkpoint(message: Message):
 
 @router.message(Command("restore_checkpoint"))
 async def secret_restore_checkpoint(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "restore_checkpoint"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "restore_checkpoint"):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -2050,7 +2118,7 @@ async def secret_restore_checkpoint(message: Message):
 
 @router.message(Command("adminlog"))
 async def view_admin_log(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "adminlog"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "adminlog"):
         return
     args = message.text.split()
     limit = 10
@@ -2158,7 +2226,7 @@ async def take_power(message: Message):
 
 @router.message(Command("listpowers"))
 async def list_powers(message: Message):
-    if not is_owner(message.from_user.id) and not has_secret_power(message.from_user.id, "listpowers"):
+    if not is_head_or_above(message.from_user.id) and not has_secret_power(message.from_user.id, "listpowers"):
         return
     args = message.text.split()
     if len(args) >= 2:
@@ -2189,61 +2257,155 @@ async def my_powers(message: Message):
                 cmds = [row[0] for row in cursor.fetchall()]
     await message.answer(f"🔑 Ваши команды: {', '.join(cmds)}")
 
-# ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
-@router.message(F.text)
-async def generic_message_handler(message: Message):
-    if message.text.startswith("/"):
+# ==================== НОВЫЕ КОМАНДЫ ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА ====================
+
+@router.message(Command("deleteuser"))
+async def owner_delete_user(message: Message):
+    if not is_owner(message.from_user.id):
         return
-    text = message.text.strip()
-    parts = text.split()
-    if not parts or not parts[0].isdigit():
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Использование: /deleteuser @user")
         return
-    bet_per_item = int(parts[0])
-    targets = parts[1:]
-    if not targets:
+    target = find_user_by_identifier(args[1])
+    if not target:
+        await message.answer("Пользователь не найден.")
         return
-    valid_targets = []
-    for tgt in targets:
-        code, display = parse_roulette_target(tgt)
-        if code is not None:
-            valid_targets.append((code, display))
-    if not valid_targets:
+    uid = target["user_id"]
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM users WHERE user_id=%s", (uid,))
+            cursor.execute("DELETE FROM admins WHERE user_id=%s", (uid,))
+            cursor.execute("DELETE FROM roulette_log WHERE user_id=%s", (uid,))
+            cursor.execute("DELETE FROM user_last_bets WHERE user_id=%s", (uid,))
+            cursor.execute("DELETE FROM daily_tasks WHERE user_id=%s", (uid,))
+            cursor.execute("DELETE FROM referrals WHERE user_id=%s", (uid,))
+            cursor.execute("DELETE FROM used_promocodes WHERE user_id=%s", (uid,))
+            cursor.execute("DELETE FROM balance_checkpoints WHERE user_id=%s", (uid,))
+            cursor.execute("DELETE FROM secret_powers WHERE user_id=%s", (uid,))
+            conn.commit()
+    await message.answer(f"✅ Пользователь {uid} полностью удалён.")
+
+@router.message(Command("resetallstats"))
+async def owner_reset_all_stats(message: Message):
+    if not is_owner(message.from_user.id):
         return
-    if not check_group_only(message, "рулетка"):
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE users SET games_played=0, games_won=0")
+            conn.commit()
+    await message.answer("✅ Статистика всех пользователей сброшена.")
+
+@router.message(Command("resetalldaily"))
+async def owner_reset_all_daily(message: Message):
+    if not is_owner(message.from_user.id):
         return
-    if bet_per_item < MIN_BET:
-        await message.answer(f"Минимальная ставка на один объект: {MIN_BET} ₸")
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE users SET last_daily = NULL")
+            conn.commit()
+    await message.answer("✅ Ежедневные задания сброшены для всех.")
+
+@router.message(Command("userid"))
+async def owner_user_id(message: Message):
+    if not is_owner(message.from_user.id):
         return
-    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
-    total_bet = bet_per_item * len(valid_targets)
-    if user["balance"] < total_bet:
-        await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Использование: /userid @user")
         return
-    chat_id = message.chat.id
-    if chat_id not in chat_roulette_bets:
-        chat_roulette_bets[chat_id] = []
-    new_user_bets = []
-    displays = []
-    for code, display in valid_targets:
-        chat_roulette_bets[chat_id].append({
-            "user_id": user["user_id"],
-            "user_name": user["first_name"],
-            "bet": bet_per_item,
-            "choice": code,
-            "choice_display": display
-        })
-        new_user_bets.append({
-            "bet": bet_per_item,
-            "choice": code,
-            "choice_display": display
-        })
-        emoji = choice_emoji(display)
-        displays.append(f"{bet_per_item} ₸ на {emoji} {display}")
-    chat_last_bet_time[(chat_id, user["user_id"])] = datetime.now()
-    save_last_bets(user["user_id"], new_user_bets)
-    mention = get_mention(user["user_id"], user["first_name"])
-    displays_str = ", ".join(displays)
-    await message.answer(f"Ставка принята: {mention} всего {format_balance(total_bet)} ({displays_str})")
+    target = find_user_by_identifier(args[1])
+    if not target:
+        await message.answer("Пользователь не найден.")
+        return
+    await message.answer(f"🆔 ID пользователя {target['first_name']}: <code>{target['user_id']}</code>")
+
+@router.message(Command("topwins"))
+async def owner_top_wins(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+    limit = 10
+    args = message.text.split()
+    if len(args) > 1 and args[1].isdigit():
+        limit = int(args[1])
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, first_name, games_won FROM users ORDER BY games_won DESC LIMIT %s",
+                (limit,)
+            )
+            rows = cursor.fetchall()
+    if not rows:
+        await message.answer("Нет данных.")
+        return
+    text = f"🏆 <b>Топ {len(rows)} по победам:</b>\n\n"
+    for i, row in enumerate(rows, 1):
+        user_id, first_name, wins = row
+        display_name = clean_first_name(first_name, user_id)
+        mention = f'<a href="tg://user?id={user_id}">{display_name}</a>'
+        text += f"{i}. {mention} — <b>{wins} побед</b>\n"
+    await message.answer(text)
+
+@router.message(Command("topgames"))
+async def owner_top_games(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+    limit = 10
+    args = message.text.split()
+    if len(args) > 1 and args[1].isdigit():
+        limit = int(args[1])
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, first_name, games_played FROM users ORDER BY games_played DESC LIMIT %s",
+                (limit,)
+            )
+            rows = cursor.fetchall()
+    if not rows:
+        await message.answer("Нет данных.")
+        return
+    text = f"🎮 <b>Топ {len(rows)} по количеству игр:</b>\n\n"
+    for i, row in enumerate(rows, 1):
+        user_id, first_name, games = row
+        display_name = clean_first_name(first_name, user_id)
+        mention = f'<a href="tg://user?id={user_id}">{display_name}</a>'
+        text += f"{i}. {mention} — <b>{games} игр</b>\n"
+    await message.answer(text)
+
+@router.message(Command("clearlastbets"))
+async def owner_clear_last_bets(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM user_last_bets")
+            conn.commit()
+    await message.answer("✅ Сохранённые ставки всех пользователей очищены.")
+
+@router.message(Command("setadminrank"))
+async def owner_set_admin_rank(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("Использование: /setadminrank @user [moder/admin/head]")
+        return
+    target = find_user_by_identifier(args[1])
+    if not target:
+        await message.answer("Пользователь не найден.")
+        return
+    rank = args[2].lower()
+    if rank not in ("moder", "admin", "head", "owner"):
+        await message.answer("❌ Ранг может быть moder, admin, head.")
+        return
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO admins (user_id, rank) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET rank = EXCLUDED.rank",
+                (target["user_id"], rank)
+            )
+            conn.commit()
+    await message.answer(f"✅ {get_mention(target['user_id'], target['first_name'])} назначен {get_rank_emoji(rank)}.")
 
 # ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
 async def handle_ping(request):
