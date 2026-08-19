@@ -536,7 +536,7 @@ async def cmd_commands_btn(message: Message):
 
 @router.message(Command("rules"))
 async def cmd_rules(message: Message):
-    await message.answer("📜 Правила нашего бота доступны по ссылке: https://teletype.in/@arrest1k/guqU_Obj9by")
+    await message.answer("📜 Правила нашего бота доступны по ссылке: https://teletype.in/@arrest1k/fBWeKkclC7u")
 
 @router.message(F.text == "🎮 Мини-игры")
 async def cmd_minigames(message: Message):
@@ -2188,7 +2188,7 @@ async def my_powers(message: Message):
                 cursor.execute("SELECT command_name FROM secret_powers WHERE user_id=%s", (user_id,))
                 cmds = [row[0] for row in cursor.fetchall()]
     await message.answer(f"🔑 Ваши команды: {', '.join(cmds)}")
-    
+
 # ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
 @router.message(F.text)
 async def generic_message_handler(message: Message):
