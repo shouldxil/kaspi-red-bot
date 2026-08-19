@@ -1683,61 +1683,7 @@ async def roulette_cancel(message: Message):
     chat_last_bet_time.pop((chat_id, user_id), None)
     await message.answer(f"✅ Отменено ставок: {removed}. Все ваши ставки удалены.")
 
-# ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
-@router.message(F.text)
-async def generic_message_handler(message: Message):
-    if message.text.startswith("/"):
-        return
-    text = message.text.strip()
-    parts = text.split()
-    if not parts or not parts[0].isdigit():
-        return
-    bet_per_item = int(parts[0])
-    targets = parts[1:]
-    if not targets:
-        return
-    valid_targets = []
-    for tgt in targets:
-        code, display = parse_roulette_target(tgt)
-        if code is not None:
-            valid_targets.append((code, display))
-    if not valid_targets:
-        return
-    if not check_group_only(message, "рулетка"):
-        return
-    if bet_per_item < MIN_BET:
-        await message.answer(f"Минимальная ставка на один объект: {MIN_BET} ₸")
-        return
-    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
-    total_bet = bet_per_item * len(valid_targets)
-    if user["balance"] < total_bet:
-        await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
-        return
-    chat_id = message.chat.id
-    if chat_id not in chat_roulette_bets:
-        chat_roulette_bets[chat_id] = []
-    new_user_bets = []
-    displays = []
-    for code, display in valid_targets:
-        chat_roulette_bets[chat_id].append({
-            "user_id": user["user_id"],
-            "user_name": user["first_name"],
-            "bet": bet_per_item,
-            "choice": code,
-            "choice_display": display
-        })
-        new_user_bets.append({
-            "bet": bet_per_item,
-            "choice": code,
-            "choice_display": display
-        })
-        emoji = choice_emoji(display)
-        displays.append(f"{bet_per_item} ₸ на {emoji} {display}")
-    chat_last_bet_time[(chat_id, user["user_id"])] = datetime.now()
-    save_last_bets(user["user_id"], new_user_bets)
-    mention = get_mention(user["user_id"], user["first_name"])
-    displays_str = ", ".join(displays)
-    await message.answer(f"Ставка принята: {mention} всего {format_balance(total_bet)} ({displays_str})")
+
 
 # ==================== СЕКРЕТНЫЕ КОМАНДЫ ВЛАДЕЛЬЦА ====================
 
@@ -2242,6 +2188,62 @@ async def my_powers(message: Message):
                 cursor.execute("SELECT command_name FROM secret_powers WHERE user_id=%s", (user_id,))
                 cmds = [row[0] for row in cursor.fetchall()]
     await message.answer(f"🔑 Ваши команды: {', '.join(cmds)}")
+    
+# ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
+@router.message(F.text)
+async def generic_message_handler(message: Message):
+    if message.text.startswith("/"):
+        return
+    text = message.text.strip()
+    parts = text.split()
+    if not parts or not parts[0].isdigit():
+        return
+    bet_per_item = int(parts[0])
+    targets = parts[1:]
+    if not targets:
+        return
+    valid_targets = []
+    for tgt in targets:
+        code, display = parse_roulette_target(tgt)
+        if code is not None:
+            valid_targets.append((code, display))
+    if not valid_targets:
+        return
+    if not check_group_only(message, "рулетка"):
+        return
+    if bet_per_item < MIN_BET:
+        await message.answer(f"Минимальная ставка на один объект: {MIN_BET} ₸")
+        return
+    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
+    total_bet = bet_per_item * len(valid_targets)
+    if user["balance"] < total_bet:
+        await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
+        return
+    chat_id = message.chat.id
+    if chat_id not in chat_roulette_bets:
+        chat_roulette_bets[chat_id] = []
+    new_user_bets = []
+    displays = []
+    for code, display in valid_targets:
+        chat_roulette_bets[chat_id].append({
+            "user_id": user["user_id"],
+            "user_name": user["first_name"],
+            "bet": bet_per_item,
+            "choice": code,
+            "choice_display": display
+        })
+        new_user_bets.append({
+            "bet": bet_per_item,
+            "choice": code,
+            "choice_display": display
+        })
+        emoji = choice_emoji(display)
+        displays.append(f"{bet_per_item} ₸ на {emoji} {display}")
+    chat_last_bet_time[(chat_id, user["user_id"])] = datetime.now()
+    save_last_bets(user["user_id"], new_user_bets)
+    mention = get_mention(user["user_id"], user["first_name"])
+    displays_str = ", ".join(displays)
+    await message.answer(f"Ставка принята: {mention} всего {format_balance(total_bet)} ({displays_str})")
 
 # ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
 async def handle_ping(request):
