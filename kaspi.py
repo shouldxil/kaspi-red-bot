@@ -1721,110 +1721,6 @@ async def roulette_cancel(message: Message):
     chat_last_bet_time.pop((chat_id, user_id), None)
     await message.answer(f"✅ Отменено ставок: {removed}. Все ваши ставки удалены.")
 
-# ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
-@router.message(F.text)
-async def generic_message_handler(message: Message):
-    if message.text.startswith("/"):
-        return
-    text = message.text.strip()
-    parts = text.split()
-    if not parts or not parts[0].isdigit():
-        return
-    bet_per_item = int(parts[0])
-    targets = parts[1:]
-    if not targets:
-        return
-    valid_targets = []
-    for tgt in targets:
-        code, display = parse_roulette_target(tgt)
-        if code is not None:
-            valid_targets.append((code, display))
-    if not valid_targets:
-        return
-    # Автоматическая обрезка до 75 ставок (молча)
-    if len(valid_targets) > 75:
-        valid_targets = valid_targets[:75]
-    if not check_group_only(message, "рулетка"):
-        return
-    if bet_per_item < MIN_BET:
-        await message.answer(f"Минимальная ставка на один объект: {MIN_BET} ₸")
-        return
-    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
-    total_bet = bet_per_item * len(valid_targets)
-    if user["balance"] < total_bet:
-        await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
-        return
-    # Мгновенное списание баланса
-    update_balance(user["user_id"], -total_bet)
-    chat_id = message.chat.id
-    if chat_id not in chat_roulette_bets:
-        chat_roulette_bets[chat_id] = []
-    new_user_bets = []
-    displays = []
-    for code, display in valid_targets:
-        chat_roulette_bets[chat_id].append({
-            "user_id": user["user_id"],
-            "user_name": user["first_name"],
-            "bet": bet_per_item,
-            "choice": code,
-            "choice_display": display
-        })
-        new_user_bets.append({
-            "bet": bet_per_item,
-            "choice": code,
-            "choice_display": display
-        })
-        displays.append(f"{bet_per_item} ₸ на {display}")
-    chat_last_bet_time[(chat_id, user["user_id"])] = datetime.now()
-    save_last_bets(user["user_id"], new_user_bets)
-    mention = get_mention(user["user_id"], user["first_name"])
-    formatted_bets = "\n".join(displays)
-    await message.answer(f"Ставка принята: {mention} всего {format_balance(total_bet)}\n\n{formatted_bets}")
-
-# ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
-async def handle_ping(request):
-    return web.Response(text="Bot is running!")
-
-async def web_server():
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logging.info(f"Web server started on port {port}")
-
-# ==================== ЗАПУСК ====================
-async def main():
-    global BOT_USERNAME
-    bot_info = await bot.get_me()
-    if bot_info.username:
-        BOT_USERNAME = bot_info.username
-
-    @dp.message.middleware()
-    async def remove_bot_mention(handler, event, data):
-        if event.text and event.text.startswith("/"):
-            parts = event.text.split()
-            if parts:
-                cmd_part = parts[0]
-                if "@" in cmd_part:
-                    cmd, _, mention = cmd_part.partition("@")
-                    if mention.lower() == BOT_USERNAME.lower():
-                        new_text = cmd
-                        if len(parts) > 1:
-                            new_text += " " + " ".join(parts[1:])
-                        event.text = new_text
-        return await handler(event, data)
-
-    dp.include_router(router)
-    await bot.delete_webhook(drop_pending_updates=True)
-    await web_server()
-    logging.info("Бот CreditMania запущен!")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
     # ==================== СЕКРЕТНЫЕ КОМАНДЫ ВЛАДЕЛЬЦА ====================
 
 @router.message(Command("zero"))
@@ -2477,3 +2373,109 @@ async def owner_set_admin_rank(message: Message):
             )
             conn.commit()
     await message.answer(f"✅ {get_mention(target['user_id'], target['first_name'])} назначен {get_rank_emoji(rank)}.")
+
+
+# ---------- ОБРАБОТЧИК СТАВОК (РУЛЕТКА) ----------
+@router.message(F.text)
+async def generic_message_handler(message: Message):
+    if message.text.startswith("/"):
+        return
+    text = message.text.strip()
+    parts = text.split()
+    if not parts or not parts[0].isdigit():
+        return
+    bet_per_item = int(parts[0])
+    targets = parts[1:]
+    if not targets:
+        return
+    valid_targets = []
+    for tgt in targets:
+        code, display = parse_roulette_target(tgt)
+        if code is not None:
+            valid_targets.append((code, display))
+    if not valid_targets:
+        return
+    # Автоматическая обрезка до 75 ставок (молча)
+    if len(valid_targets) > 75:
+        valid_targets = valid_targets[:75]
+    if not check_group_only(message, "рулетка"):
+        return
+    if bet_per_item < MIN_BET:
+        await message.answer(f"Минимальная ставка на один объект: {MIN_BET} ₸")
+        return
+    user = get_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
+    total_bet = bet_per_item * len(valid_targets)
+    if user["balance"] < total_bet:
+        await message.answer(f"❌ Недостаточно средств. Требуется {format_balance(total_bet)} для {len(valid_targets)} ставок.")
+        return
+    # Мгновенное списание баланса
+    update_balance(user["user_id"], -total_bet)
+    chat_id = message.chat.id
+    if chat_id not in chat_roulette_bets:
+        chat_roulette_bets[chat_id] = []
+    new_user_bets = []
+    displays = []
+    for code, display in valid_targets:
+        chat_roulette_bets[chat_id].append({
+            "user_id": user["user_id"],
+            "user_name": user["first_name"],
+            "bet": bet_per_item,
+            "choice": code,
+            "choice_display": display
+        })
+        new_user_bets.append({
+            "bet": bet_per_item,
+            "choice": code,
+            "choice_display": display
+        })
+        displays.append(f"{bet_per_item} ₸ на {display}")
+    chat_last_bet_time[(chat_id, user["user_id"])] = datetime.now()
+    save_last_bets(user["user_id"], new_user_bets)
+    mention = get_mention(user["user_id"], user["first_name"])
+    formatted_bets = "\n".join(displays)
+    await message.answer(f"Ставка принята: {mention} всего {format_balance(total_bet)}\n\n{formatted_bets}")
+
+# ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
+async def handle_ping(request):
+    return web.Response(text="Bot is running!")
+
+async def web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Web server started on port {port}")
+
+# ==================== ЗАПУСК ====================
+async def main():
+    global BOT_USERNAME
+    bot_info = await bot.get_me()
+    if bot_info.username:
+        BOT_USERNAME = bot_info.username
+
+    @dp.message.middleware()
+    async def remove_bot_mention(handler, event, data):
+        if event.text and event.text.startswith("/"):
+            parts = event.text.split()
+            if parts:
+                cmd_part = parts[0]
+                if "@" in cmd_part:
+                    cmd, _, mention = cmd_part.partition("@")
+                    if mention.lower() == BOT_USERNAME.lower():
+                        new_text = cmd
+                        if len(parts) > 1:
+                            new_text += " " + " ".join(parts[1:])
+                        event.text = new_text
+        return await handler(event, data)
+
+    dp.include_router(router)
+    await bot.delete_webhook(drop_pending_updates=True)
+    await web_server()
+    logging.info("Бот CreditMania запущен!")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
