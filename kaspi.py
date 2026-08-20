@@ -1472,12 +1472,11 @@ def parse_roulette_target(target_str: str):
         return "odd", "ODD"
     elif t in ["1-12", "13-24", "25-36"]:
         return t, t
-      elif "-" in t:
+    elif "-" in t:
         try:
             s, e = map(int, t.split("-"))
             if 0 <= s <= 36 and 0 <= e <= 36 and s <= e:
                 count = e - s + 1
-                # Разрешаем только диапазоны до 6 чисел включительно
                 if count <= 6:
                     return t, f"{s}-{e}"
                 else:
