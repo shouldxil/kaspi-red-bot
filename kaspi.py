@@ -1472,12 +1472,16 @@ def parse_roulette_target(target_str: str):
         return "odd", "ODD"
     elif t in ["1-12", "13-24", "25-36"]:
         return t, t
-    elif "-" in t:
+      elif "-" in t:
         try:
             s, e = map(int, t.split("-"))
-            # Принимаем любые диапазоны в пределах 0-36 без ограничения длины
             if 0 <= s <= 36 and 0 <= e <= 36 and s <= e:
-                return t, f"{s}-{e}"
+                count = e - s + 1
+                # Разрешаем только диапазоны до 6 чисел включительно
+                if count <= 6:
+                    return t, f"{s}-{e}"
+                else:
+                    return None, None
             else:
                 return None, None
         except Exception:
@@ -2386,7 +2390,8 @@ async def generic_message_handler(message: Message):
         return
     bet_per_item = int(parts[0])
     targets = parts[1:]
-    if not targets:
+       if not valid_targets:
+        await message.answer("❌ Недопустимый формат ставки или диапазон больше 6 чисел.")
         return
     valid_targets = []
     for tgt in targets:
