@@ -26,8 +26,8 @@ from aiogram.types import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+TOKEN = "8158276964:AAE2hnQtgfDe11S7vo2bMZZJX3y1cNC72qc"
+DATABASE_URL = "postgresql://postgres:[V7#qL9!xR2@pM8$zK4]@db.msbltgvxgininrpehtnq.supabase.co:5432/postgres"
 ADMIN_ID = 7934547554
 MIN_BET = 10
 BOT_USERNAME = ""
